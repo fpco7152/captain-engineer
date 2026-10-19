@@ -110,6 +110,7 @@ export function fmtDate(date: string) {
 export function friendlyError(e: unknown): string {
   const msg = (e as { message?: string })?.message ?? String(e)
   if (/Invalid login credentials/i.test(msg)) return "Username or password is incorrect."
+  if (/banned/i.test(msg)) return "This login has been turned off. Ask the owner for access."
   if (/Failed to fetch|NetworkError|network/i.test(msg)) return "Can't reach the server. Check your internet connection."
   if (/JWT|expired|session/i.test(msg)) return "Your session expired. Please sign in again."
   if (/violates check constraint/i.test(msg)) return "That value isn't allowed. Numbers must be zero or more."
