@@ -346,7 +346,7 @@ export function InventoryApp({ me, email, onStaffChanged }: { me: Staff; email: 
     a.href = URL.createObjectURL(blob)
     a.download = `inventory-${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
-    URL.revokeObjectURL(a.href)
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
   }
 
   const stats = useMemo(() => {
