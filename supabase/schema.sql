@@ -149,7 +149,21 @@ begin
 end;
 $$;
 
--- Logins are created by the owner from the app; public sign-ups never get access.
+-- Logins are created only by the owner from the app; any other sign-up is rejected.
+create or replace function public.block_public_signups() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if coalesce(current_setting('app.creating_login', true), '') <> '1' then
+    raise exception 'Sign-ups are disabled';
+  end if;
+  return new;
+end;
+$$;
+revoke execute on function public.block_public_signups() from public, anon, authenticated;
+
+create trigger block_public_signups before insert on auth.users
+  for each row execute function public.block_public_signups();
+
 create or replace function public._create_login(p_email text, p_password text, p_name text, p_role text)
 returns uuid
 language plpgsql security definer set search_path = '' as $$
@@ -173,6 +187,7 @@ begin
     raise exception 'That email already has a login';
   end if;
 
+  perform set_config('app.creating_login', '1', true);
   insert into auth.users (
     instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
     raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
@@ -183,6 +198,7 @@ begin
     '{"provider":"email","providers":["email"]}'::jsonb, jsonb_build_object('name', p_name), now(), now(),
     '', '', '', ''
   );
+  perform set_config('app.creating_login', '', true);
 
   insert into auth.identities (id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
   values (gen_random_uuid(), v_id, v_id::text,

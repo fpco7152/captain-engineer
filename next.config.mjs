@@ -37,7 +37,12 @@ const nextConfig = {
     unoptimized: true,
   },
   async redirects() {
-    return process.env.INVENTORY_ONLY === "1" ? [{ source: "/", destination: "/inventory", permanent: false }] : []
+    if (process.env.INVENTORY_ONLY !== "1") return []
+    // On the inventory deployment, every other page sends visitors to the sign-in screen.
+    return [
+      { source: "/", destination: "/inventory", permanent: false },
+      { source: "/:path((?!inventory|_next/).*)", destination: "/inventory", permanent: false },
+    ]
   },
   async headers() {
     return [{ source: "/inventory/:path*", headers: inventoryHeaders }]
