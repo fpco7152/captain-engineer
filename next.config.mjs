@@ -36,6 +36,9 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  async redirects() {
+    return process.env.INVENTORY_ONLY === "1" ? [{ source: "/", destination: "/inventory", permanent: false }] : []
+  },
   async headers() {
     return [{ source: "/inventory/:path*", headers: inventoryHeaders }]
   },
