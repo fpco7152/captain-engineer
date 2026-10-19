@@ -5,7 +5,7 @@ import { Loader2, Lock, Syringe } from "lucide-react"
 import { Toaster } from "sonner"
 import type { Session } from "@supabase/supabase-js"
 import { supabase } from "@/lib/supabase"
-import { type Staff, friendlyError } from "./types"
+import { type Staff, emailToUsername, friendlyError, usernameToEmail } from "./types"
 import { ChangePasswordForm, PasswordInput, btn } from "./dialogs"
 import { FieldLabel } from "./fields"
 import { InventoryApp } from "./inventory-app"
@@ -34,7 +34,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 function LoginForm() {
-  const [email, setEmail] = useState("")
+  const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
@@ -42,9 +42,9 @@ function LoginForm() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
-    if (!email.trim() || !password) return setError("Enter your email and password.")
+    if (!username.trim() || !password) return setError("Enter your username and password.")
     setBusy(true)
-    const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+    const { error: err } = await supabase.auth.signInWithPassword({ email: usernameToEmail(username), password })
     setBusy(false)
     if (err) {
       setError(/rate|too many/i.test(err.message) ? "Too many attempts. Wait a few minutes and try again." : friendlyError(err))
@@ -55,15 +55,16 @@ function LoginForm() {
     <Shell>
       <form onSubmit={submit} className="space-y-4">
         <div>
-          <FieldLabel htmlFor="email">Email</FieldLabel>
+          <FieldLabel htmlFor="username">Username</FieldLabel>
           <input
-            id="email"
-            type="email"
-            inputMode="email"
+            id="username"
+            type="text"
             autoComplete="username"
             autoCapitalize="none"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            autoCorrect="off"
+            spellCheck={false}
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
             className="h-11 w-full rounded-lg border border-slate-300 px-3 shadow-sm outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20"
           />
         </div>
@@ -80,7 +81,7 @@ function LoginForm() {
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
           Sign in
         </button>
-        <p className="text-center text-xs text-slate-500">Forgot your password? Ask the owner to reset it from Team logins.</p>
+        <p className="text-center text-xs text-slate-500">Forgot your password? Ask the owner to reset it.</p>
       </form>
     </Shell>
   )
@@ -93,7 +94,7 @@ export function InventoryRoot() {
     if (!session) return setState({ kind: "signedOut" })
     const { data, error } = await supabase.from("staff").select("*").eq("user_id", session.user.id).maybeSingle()
     if (error) return setState({ kind: "error", message: friendlyError(error) })
-    if (!data || !(data as Staff).active) return setState({ kind: "noAccess", email: session.user.email ?? "" })
+    if (!data || !(data as Staff).active) return setState({ kind: "noAccess", email: emailToUsername(session.user.email ?? "") })
     setState({ kind: "ready", session, me: data as Staff })
   }, [])
 
@@ -131,7 +132,7 @@ export function InventoryRoot() {
       <Shell>
         <p className="font-semibold">This login doesn&apos;t have access</p>
         <p className="mt-1 text-sm text-slate-600">
-          {state.email} isn&apos;t on the team list. Ask the owner to add you from Team logins.
+          {state.email} isn&apos;t on the team list. Ask the owner to give you access.
         </p>
         <button className={`${btn.secondary} mt-4 w-full`} onClick={() => supabase.auth.signOut()}>
           Sign out
@@ -153,8 +154,7 @@ export function InventoryRoot() {
     body = (
       <InventoryApp
         me={state.me}
-        email={state.session.user.email ?? ""}
-        onStaffChanged={() => resolve(state.session)}
+        username={emailToUsername(state.session.user.email ?? "")}
       />
     )
   }

@@ -1,6 +1,11 @@
 -- Med spa inventory: full database setup (mirrors the live Supabase project).
--- Run in a fresh Supabase project's SQL editor, then create the first owner with:
---   select public._create_login('you@example.com', '<temporary password>', 'Your name', 'owner');
+--
+-- Logins are managed only here, in the Supabase SQL editor (the app cannot create them):
+--   select add_login('jane.doe', 'a-strong-password', 'Jane Doe');            -- staff; must pick a new password at first sign-in
+--   select add_login('jane.doe', 'a-strong-password', 'Jane Doe', 'owner', false);
+--   select reset_password('jane.doe', 'a-new-password');
+--   select remove_login('jane.doe');                                          -- blocks sign-in, keeps history
+-- People sign in with the username; it is stored as <username>@inventory.local.
 
 create extension if not exists pgcrypto with schema extensions;
 
@@ -154,7 +159,7 @@ create or replace function public.block_public_signups() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
   if coalesce(current_setting('app.creating_login', true), '') <> '1' then
-    raise exception 'Sign-ups are disabled';
+    raise exception 'Sign-ups are disabled. Create logins in the SQL editor: select add_login(''username'', ''password'', ''Full name'');';
   end if;
   return new;
 end;
@@ -212,52 +217,6 @@ begin
 end;
 $$;
 
-create or replace function public.owner_add_staff(p_email text, p_password text, p_name text, p_role text default 'staff')
-returns uuid
-language plpgsql security definer set search_path = '' as $$
-begin
-  if not public.is_owner() then
-    raise exception 'Only the owner can add logins';
-  end if;
-  return public._create_login(p_email, p_password, p_name, p_role);
-end;
-$$;
-
-create or replace function public.owner_remove_staff(p_user_id uuid)
-returns void
-language plpgsql security definer set search_path = '' as $$
-begin
-  if not public.is_owner() then
-    raise exception 'Only the owner can remove logins';
-  end if;
-  if p_user_id = auth.uid() then
-    raise exception 'You cannot remove your own login';
-  end if;
-  update public.staff set active = false where user_id = p_user_id;
-  update auth.users set banned_until = 'infinity' where id = p_user_id;
-end;
-$$;
-
-create or replace function public.owner_reset_password(p_user_id uuid, p_password text)
-returns void
-language plpgsql security definer set search_path = '' as $$
-begin
-  if not public.is_owner() then
-    raise exception 'Only the owner can reset passwords';
-  end if;
-  if char_length(p_password) < 10 then
-    raise exception 'Password must be at least 10 characters';
-  end if;
-  if not exists (select 1 from public.staff where user_id = p_user_id and active) then
-    raise exception 'Login not found';
-  end if;
-  update auth.users
-    set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf')), updated_at = now()
-    where id = p_user_id;
-  update public.staff set must_change_password = (p_user_id <> auth.uid()) where user_id = p_user_id;
-end;
-$$;
-
 create or replace function public.mark_password_changed()
 returns void
 language sql security definer set search_path = '' as $$
@@ -265,18 +224,77 @@ language sql security definer set search_path = '' as $$
 $$;
 
 revoke execute on function public._create_login(text, text, text, text) from public, anon, authenticated;
-revoke execute on function public.owner_add_staff(text, text, text, text) from public, anon;
-revoke execute on function public.owner_remove_staff(uuid) from public, anon;
-revoke execute on function public.owner_reset_password(uuid, text) from public, anon;
+create or replace function public.login_email(p_username text) returns text
+language plpgsql immutable set search_path = '' as $$
+declare
+  v text := lower(trim(p_username));
+begin
+  if v !~ '^[a-z0-9][a-z0-9._-]{2,39}$' then
+    raise exception 'Usernames must be 3-40 characters: letters, numbers, dots, dashes or underscores';
+  end if;
+  return v || '@inventory.local';
+end;
+$$;
+
+create or replace function public.add_login(p_username text, p_password text, p_name text, p_role text default 'staff', p_must_change_password boolean default true)
+returns text
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  v_id := public._create_login(public.login_email(p_username), p_password, p_name, p_role);
+  update public.staff set must_change_password = p_must_change_password where user_id = v_id;
+  return 'Created login ' || lower(trim(p_username));
+end;
+$$;
+
+create or replace function public.reset_password(p_username text, p_password text, p_must_change_password boolean default true)
+returns text
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  if char_length(p_password) < 10 then
+    raise exception 'Password must be at least 10 characters';
+  end if;
+  select id into v_id from auth.users where email = public.login_email(p_username);
+  if v_id is null then
+    raise exception 'No login named %', p_username;
+  end if;
+  update auth.users
+    set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf')), banned_until = null, updated_at = now()
+    where id = v_id;
+  update public.staff set must_change_password = p_must_change_password, active = true where user_id = v_id;
+  return 'Password reset for ' || lower(trim(p_username));
+end;
+$$;
+
+create or replace function public.remove_login(p_username text)
+returns text
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_id uuid;
+begin
+  select id into v_id from auth.users where email = public.login_email(p_username);
+  if v_id is null then
+    raise exception 'No login named %', p_username;
+  end if;
+  update public.staff set active = false where user_id = v_id;
+  update auth.users set banned_until = 'infinity' where id = v_id;
+  return 'Removed login ' || lower(trim(p_username)) || ' (history is kept)';
+end;
+$$;
+
+revoke execute on function public.login_email(text) from public, anon, authenticated;
+revoke execute on function public.add_login(text, text, text, text, boolean) from public, anon, authenticated;
+revoke execute on function public.reset_password(text, text, boolean) from public, anon, authenticated;
+revoke execute on function public.remove_login(text) from public, anon, authenticated;
 revoke execute on function public.mark_password_changed() from public, anon;
 revoke execute on function public.adjust_stock(uuid, numeric, text, text) from public, anon;
 revoke execute on function public.is_staff() from public, anon;
 revoke execute on function public.is_owner() from public, anon;
 revoke execute on function public.products_log_stock() from public, anon, authenticated;
 revoke execute on function public.products_touch() from public, anon, authenticated;
-grant execute on function public.owner_add_staff(text, text, text, text) to authenticated;
-grant execute on function public.owner_remove_staff(uuid) to authenticated;
-grant execute on function public.owner_reset_password(uuid, text) to authenticated;
 grant execute on function public.mark_password_changed() to authenticated;
 grant execute on function public.adjust_stock(uuid, numeric, text, text) to authenticated;
 grant execute on function public.is_staff() to authenticated;

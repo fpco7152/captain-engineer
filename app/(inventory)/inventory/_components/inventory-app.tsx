@@ -12,7 +12,6 @@ import {
   Plus,
   Search,
   Syringe,
-  Users,
   Wallet,
   X,
 } from "lucide-react"
@@ -32,7 +31,7 @@ import {
   productStatuses,
 } from "./types"
 import { EditRow, type FieldPatch, ViewRow } from "./product-row"
-import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, TeamDialog, btn } from "./dialogs"
+import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, btn } from "./dialogs"
 
 type Filter = "all" | "attention" | "reorder" | "expiring" | Category
 
@@ -80,15 +79,13 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
 
 function AccountMenu({
   me,
-  email,
+  username,
   onPassword,
-  onTeam,
   onExport,
 }: {
   me: Staff
-  email: string
+  username: string
   onPassword: () => void
-  onTeam: () => void
   onExport: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -127,16 +124,11 @@ function AccountMenu({
         <div className="absolute right-0 z-40 mt-2 w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
           <div className="border-b border-slate-100 px-4 py-3">
             <p className="font-semibold text-slate-900">{me.display_name}</p>
-            <p className="truncate text-sm text-slate-500">{email}</p>
+            <p className="truncate text-sm text-slate-500">{username}</p>
           </div>
           <button className={item} onClick={pick(onPassword)}>
             <KeyRound className="h-4 w-4" /> Change password
           </button>
-          {me.role === "owner" && (
-            <button className={item} onClick={pick(onTeam)}>
-              <Users className="h-4 w-4" /> Team logins
-            </button>
-          )}
           <button className={item} onClick={pick(onExport)}>
             <Download className="h-4 w-4" /> Download spreadsheet (CSV)
           </button>
@@ -193,7 +185,7 @@ function StatCard({
   )
 }
 
-export function InventoryApp({ me, email, onStaffChanged }: { me: Staff; email: string; onStaffChanged: () => void }) {
+export function InventoryApp({ me, username }: { me: Staff; username: string }) {
   const [products, setProducts] = useState<Product[] | null>(null)
   const [loadError, setLoadError] = useState("")
   const [staff, setStaff] = useState<Staff[]>([])
@@ -205,7 +197,6 @@ export function InventoryApp({ me, email, onStaffChanged }: { me: Staff; email: 
   const [historyFor, setHistoryFor] = useState<Product | null>(null)
   const [deleting, setDeleting] = useState<Product | null>(null)
   const [pwOpen, setPwOpen] = useState(false)
-  const [teamOpen, setTeamOpen] = useState(false)
   const queues = useRef(new Map<string, Promise<unknown>>())
 
   useEffect(() => {
@@ -413,7 +404,7 @@ export function InventoryApp({ me, email, onStaffChanged }: { me: Staff; email: 
           </div>
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
             <ModeToggle mode={mode} onChange={setMode} />
-            <AccountMenu me={me} email={email} onPassword={() => setPwOpen(true)} onTeam={() => setTeamOpen(true)} onExport={exportCsv} />
+            <AccountMenu me={me} username={username} onPassword={() => setPwOpen(true)} onExport={exportCsv} />
           </div>
         </div>
         {mode === "edit" && (
@@ -620,18 +611,6 @@ export function InventoryApp({ me, email, onStaffChanged }: { me: Staff; email: 
       <Modal open={pwOpen} onClose={() => setPwOpen(false)} title="Change password">
         <ChangePasswordForm onDone={() => setPwOpen(false)} />
       </Modal>
-      {me.role === "owner" && (
-        <TeamDialog
-          open={teamOpen}
-          onClose={() => setTeamOpen(false)}
-          staff={staff}
-          me={me}
-          onChanged={() => {
-            loadStaff()
-            onStaffChanged()
-          }}
-        />
-      )}
     </div>
   )
 }

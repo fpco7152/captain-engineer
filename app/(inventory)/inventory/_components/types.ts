@@ -50,6 +50,18 @@ export type Movement = {
 
 export type Mode = "view" | "edit"
 
+// Logins are usernames; Supabase Auth stores them as internal, non-deliverable addresses.
+const LOGIN_DOMAIN = "@inventory.local"
+
+export function usernameToEmail(input: string) {
+  const v = input.trim().toLowerCase()
+  return v.includes("@") ? v : v + LOGIN_DOMAIN
+}
+
+export function emailToUsername(email: string) {
+  return email.endsWith(LOGIN_DOMAIN) ? email.slice(0, -LOGIN_DOMAIN.length) : email
+}
+
 export const EXPIRING_DAYS = 60
 
 export function normalizeProduct(p: Product): Product {
@@ -97,7 +109,7 @@ export function fmtDate(date: string) {
 
 export function friendlyError(e: unknown): string {
   const msg = (e as { message?: string })?.message ?? String(e)
-  if (/Invalid login credentials/i.test(msg)) return "Email or password is incorrect."
+  if (/Invalid login credentials/i.test(msg)) return "Username or password is incorrect."
   if (/Failed to fetch|NetworkError|network/i.test(msg)) return "Can't reach the server. Check your internet connection."
   if (/JWT|expired|session/i.test(msg)) return "Your session expired. Please sign in again."
   if (/violates check constraint/i.test(msg)) return "That value isn't allowed. Numbers must be zero or more."
