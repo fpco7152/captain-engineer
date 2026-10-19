@@ -1,0 +1,637 @@
+"use client"
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  AlertTriangle,
+  CalendarClock,
+  Download,
+  Eye,
+  KeyRound,
+  LogOut,
+  Pencil,
+  Plus,
+  Search,
+  Syringe,
+  Users,
+  Wallet,
+  X,
+} from "lucide-react"
+import { toast } from "sonner"
+import { supabase } from "@/lib/supabase"
+import {
+  CATEGORIES,
+  type Category,
+  type Mode,
+  type Product,
+  type Staff,
+  categoryLabel,
+  fmtMoney,
+  fmtNum,
+  friendlyError,
+  normalizeProduct,
+  productStatuses,
+} from "./types"
+import { EditRow, type FieldPatch, ViewRow } from "./product-row"
+import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, TeamDialog, btn } from "./dialogs"
+
+type Filter = "all" | "attention" | "reorder" | "expiring" | Category
+
+const MODE_KEY = "medspa-inventory-mode"
+
+function singular(unit: string, n: number) {
+  return Math.abs(n) === 1 && unit.endsWith("s") ? unit.slice(0, -1) : unit
+}
+
+function mostCommonUnit(items: Product[]) {
+  const counts = new Map<string, number>()
+  items.forEach((p) => counts.set(p.unit, (counts.get(p.unit) ?? 0) + 1))
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "items"
+}
+
+function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
+  return (
+    <div role="group" aria-label="Screen mode" className="inline-flex rounded-xl bg-slate-100 p-1 ring-1 ring-inset ring-slate-200">
+      {(
+        [
+          { m: "view", label: "View", Icon: Eye },
+          { m: "edit", label: "Edit", Icon: Pencil },
+        ] as const
+      ).map(({ m, label, Icon }) => (
+        <button
+          key={m}
+          type="button"
+          aria-pressed={mode === m}
+          onClick={() => onChange(m)}
+          className={`inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold transition ${
+            mode === m
+              ? m === "edit"
+                ? "bg-amber-500 text-white shadow-sm"
+                : "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <Icon className="h-4 w-4" />
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function AccountMenu({
+  me,
+  email,
+  onPassword,
+  onTeam,
+  onExport,
+}: {
+  me: Staff
+  email: string
+  onPassword: () => void
+  onTeam: () => void
+  onExport: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent | TouchEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", close)
+    document.addEventListener("touchstart", close)
+    return () => {
+      document.removeEventListener("mousedown", close)
+      document.removeEventListener("touchstart", close)
+    }
+  }, [open])
+
+  const item = "flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 hover:bg-slate-50"
+  const pick = (fn: () => void) => () => {
+    setOpen(false)
+    fn()
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Account menu"
+        aria-expanded={open}
+        className="flex h-10 w-10 items-center justify-center rounded-full bg-teal-700 text-sm font-bold text-white shadow-sm hover:bg-teal-800"
+      >
+        {me.display_name.trim().charAt(0).toUpperCase()}
+      </button>
+      {open && (
+        <div className="absolute right-0 z-40 mt-2 w-64 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+          <div className="border-b border-slate-100 px-4 py-3">
+            <p className="font-semibold text-slate-900">{me.display_name}</p>
+            <p className="truncate text-sm text-slate-500">{email}</p>
+          </div>
+          <button className={item} onClick={pick(onPassword)}>
+            <KeyRound className="h-4 w-4" /> Change password
+          </button>
+          {me.role === "owner" && (
+            <button className={item} onClick={pick(onTeam)}>
+              <Users className="h-4 w-4" /> Team logins
+            </button>
+          )}
+          <button className={item} onClick={pick(onExport)}>
+            <Download className="h-4 w-4" /> Download spreadsheet (CSV)
+          </button>
+          <button className={`${item} border-t border-slate-100 text-rose-700`} onClick={pick(() => supabase.auth.signOut())}>
+            <LogOut className="h-4 w-4" /> Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StatCard({
+  label,
+  value,
+  sub,
+  Icon,
+  tone,
+  active,
+  onClick,
+}: {
+  label: string
+  value: string
+  sub?: string
+  Icon: typeof Syringe
+  tone: "teal" | "violet" | "amber" | "orange" | "slate"
+  active?: boolean
+  onClick?: () => void
+}) {
+  const tones = {
+    teal: "bg-teal-50 text-teal-700",
+    violet: "bg-violet-50 text-violet-700",
+    amber: "bg-amber-50 text-amber-700",
+    orange: "bg-orange-50 text-orange-700",
+    slate: "bg-slate-100 text-slate-700",
+  }
+  const Comp = onClick ? "button" : "div"
+  return (
+    <Comp
+      {...(onClick ? { type: "button" as const, onClick, "aria-pressed": active } : {})}
+      className={`flex min-w-0 flex-col rounded-2xl border bg-white p-4 text-left shadow-sm transition ${
+        active ? "border-teal-600 ring-2 ring-teal-600/20" : "border-slate-200"
+      } ${onClick ? "hover:border-slate-300 active:scale-[.99]" : ""}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-sm font-medium text-slate-500">{label}</span>
+        <span className={`rounded-lg p-1.5 ${tones[tone]}`}>
+          <Icon className="h-4 w-4" />
+        </span>
+      </div>
+      <span className="mt-2 text-2xl font-bold tabular-nums text-slate-900 sm:text-3xl">{value}</span>
+      {sub && <span className="mt-0.5 truncate text-xs text-slate-500">{sub}</span>}
+    </Comp>
+  )
+}
+
+export function InventoryApp({ me, email, onStaffChanged }: { me: Staff; email: string; onStaffChanged: () => void }) {
+  const [products, setProducts] = useState<Product[] | null>(null)
+  const [loadError, setLoadError] = useState("")
+  const [staff, setStaff] = useState<Staff[]>([])
+  const [mode, setModeState] = useState<Mode>("view")
+  const [filter, setFilter] = useState<Filter>("all")
+  const [search, setSearch] = useState("")
+  const [live, setLive] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [historyFor, setHistoryFor] = useState<Product | null>(null)
+  const [deleting, setDeleting] = useState<Product | null>(null)
+  const [pwOpen, setPwOpen] = useState(false)
+  const [teamOpen, setTeamOpen] = useState(false)
+  const queues = useRef(new Map<string, Promise<unknown>>())
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(MODE_KEY)
+      if (saved === "edit" || saved === "view") setModeState(saved)
+    } catch {}
+  }, [])
+
+  const setMode = (m: Mode) => {
+    setModeState(m)
+    try {
+      localStorage.setItem(MODE_KEY, m)
+    } catch {}
+  }
+
+  const loadProducts = useCallback(async () => {
+    const { data, error } = await supabase.from("products").select("*").order("name")
+    if (error) {
+      setLoadError(friendlyError(error))
+      return
+    }
+    setLoadError("")
+    setProducts((data as Product[]).map(normalizeProduct))
+  }, [])
+
+  const loadStaff = useCallback(async () => {
+    const { data } = await supabase.from("staff").select("*").order("display_name")
+    if (data) setStaff(data as Staff[])
+  }, [])
+
+  useEffect(() => {
+    loadProducts()
+    loadStaff()
+
+    const channel = supabase
+      .channel("inventory-products")
+      .on("postgres_changes", { event: "*", schema: "public", table: "products" }, (payload) => {
+        setProducts((prev) => {
+          if (!prev) return prev
+          if (payload.eventType === "DELETE") return prev.filter((p) => p.id !== (payload.old as Product).id)
+          const row = normalizeProduct(payload.new as Product)
+          const exists = prev.some((p) => p.id === row.id)
+          return exists ? prev.map((p) => (p.id === row.id ? row : p)) : [...prev, row]
+        })
+      })
+      .subscribe((status) => setLive(status === "SUBSCRIBED"))
+
+    const refresh = () => document.visibilityState === "visible" && loadProducts()
+    document.addEventListener("visibilitychange", refresh)
+    window.addEventListener("online", refresh)
+    return () => {
+      supabase.removeChannel(channel)
+      document.removeEventListener("visibilitychange", refresh)
+      window.removeEventListener("online", refresh)
+    }
+  }, [loadProducts, loadStaff])
+
+  const staffById = useMemo(() => new Map(staff.map((s) => [s.user_id, s])), [staff])
+
+  const replace = (row: Product) => setProducts((prev) => prev && prev.map((p) => (p.id === row.id ? row : p)))
+
+  const patch = async (id: string, change: FieldPatch) => {
+    const before = products?.find((p) => p.id === id)
+    if (!before) return
+    replace({ ...before, ...change })
+    const { data, error } = await supabase.from("products").update(change).eq("id", id).select().single()
+    if (error) {
+      replace(before)
+      toast.error(friendlyError(error))
+      throw error
+    }
+    replace(normalizeProduct(data as Product))
+  }
+
+  const adjust = (id: string, delta: number, reason: string, quiet = false) => {
+    setProducts((prev) => prev && prev.map((p) => (p.id === id ? { ...p, quantity: Math.max(0, p.quantity + delta) } : p)))
+    const prevTask = queues.current.get(id) ?? Promise.resolve()
+    const task = prevTask.then(async () => {
+      const { data, error } = await supabase.rpc("adjust_stock", { p_product_id: id, p_change: delta, p_reason: reason })
+      if (error) {
+        toast.error(friendlyError(error))
+        await loadProducts()
+        return
+      }
+      replace(normalizeProduct(data as Product))
+    })
+    queues.current.set(id, task)
+
+    if (quiet) return
+    const p = products?.find((x) => x.id === id)
+    if (!p) return
+    const verb = delta < 0 ? "Used" : "Received"
+    toast(`${verb} ${fmtNum(Math.abs(delta))} ${singular(p.unit, delta)}`, {
+      description: p.name,
+      action: { label: "Undo", onClick: () => adjust(id, -delta, "count correction", true) },
+    })
+  }
+
+  const remove = async (p: Product) => {
+    const { error } = await supabase.from("products").delete().eq("id", p.id)
+    if (error) {
+      toast.error(friendlyError(error))
+      return
+    }
+    setProducts((prev) => prev && prev.filter((x) => x.id !== p.id))
+    toast.success(`Deleted ${p.name}`)
+  }
+
+  const exportCsv = () => {
+    if (!products) return
+    const cols = ["Name", "Category", "Brand", "On hand", "Unit", "Reorder at", "Cost each", "Value", "Lot", "Expires", "Supplier", "Notes"]
+    const esc = (v: unknown) => {
+      let s = v == null ? "" : String(v)
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const rows = products.map((p) =>
+      [
+        p.name,
+        categoryLabel(p.category),
+        p.brand,
+        p.quantity,
+        p.unit,
+        p.par_level,
+        p.unit_cost.toFixed(2),
+        (p.quantity * p.unit_cost).toFixed(2),
+        p.lot_number,
+        p.expiration_date,
+        p.supplier,
+        p.notes,
+      ]
+        .map(esc)
+        .join(","),
+    )
+    const blob = new Blob([[cols.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `inventory-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const stats = useMemo(() => {
+    const list = products ?? []
+    const tox = list.filter((p) => p.category === "neurotoxin")
+    const fill = list.filter((p) => p.category === "filler")
+    return {
+      tox: tox.reduce((s, p) => s + p.quantity, 0),
+      toxUnit: mostCommonUnit(tox),
+      fill: fill.reduce((s, p) => s + p.quantity, 0),
+      fillUnit: mostCommonUnit(fill),
+      reorder: list.filter((p) => productStatuses(p).some((s) => s.key === "out" || s.key === "low")).length,
+      expiring: list.filter((p) => productStatuses(p).some((s) => s.key === "expired" || s.key === "expiring")).length,
+      value: list.reduce((s, p) => s + p.quantity * p.unit_cost, 0),
+    }
+  }, [products])
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return (products ?? []).filter((p) => {
+      const st = productStatuses(p).map((s) => s.key)
+      if (filter === "attention" && st.length === 0) return false
+      if (filter === "reorder" && !st.some((k) => k === "out" || k === "low")) return false
+      if (filter === "expiring" && !st.some((k) => k === "expired" || k === "expiring")) return false
+      if (CATEGORIES.some((c) => c.value === filter) && p.category !== filter) return false
+      if (!q) return true
+      return [p.name, p.brand, p.lot_number, p.supplier].some((v) => v?.toLowerCase().includes(q))
+    })
+  }, [products, filter, search])
+
+  const groups = useMemo(
+    () =>
+      CATEGORIES.map((c) => ({
+        ...c,
+        items: visible.filter((p) => p.category === c.value).sort((a, b) => a.name.localeCompare(b.name)),
+      })).filter((g) => g.items.length > 0),
+    [visible],
+  )
+
+  const presentCategories = CATEGORIES.filter((c) => (products ?? []).some((p) => p.category === c.value))
+  const attentionCount = (products ?? []).filter((p) => productStatuses(p).length > 0).length
+  const toggleFilter = (f: Filter) => setFilter((cur) => (cur === f ? "all" : f))
+
+  const chip = (active: boolean) =>
+    `inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium ring-1 ring-inset transition ${
+      active ? "bg-slate-900 text-white ring-slate-900" : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+    }`
+
+  return (
+    <div className="min-h-dvh bg-slate-50 pb-16 text-slate-900">
+      <header className={`sticky top-0 z-30 border-b bg-white/95 backdrop-blur ${mode === "edit" ? "border-amber-300" : "border-slate-200"}`}>
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white">
+              <Syringe className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-bold leading-tight sm:text-lg">Inventory</h1>
+              <p className="flex items-center gap-1.5 text-xs text-slate-500">
+                <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-slate-300"}`} />
+                {live ? "Live" : "Connecting…"}
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <ModeToggle mode={mode} onChange={setMode} />
+            <AccountMenu me={me} email={email} onPassword={() => setPwOpen(true)} onTeam={() => setTeamOpen(true)} onExport={exportCsv} />
+          </div>
+        </div>
+        {mode === "edit" && (
+          <div className="border-t border-amber-200 bg-amber-50">
+            <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-sm text-amber-900">
+              <span>
+                <strong>Edit mode.</strong> Tap any number to change it. Changes save automatically.
+              </span>
+              <button onClick={() => setMode("view")} className="shrink-0 rounded-md px-2 py-1 font-semibold hover:bg-amber-100">
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+      </header>
+
+      <main className="mx-auto max-w-6xl space-y-5 px-4 pt-5">
+        <section className="grid grid-cols-2 gap-3 lg:grid-cols-5" aria-label="Summary">
+          <StatCard
+            label="Neurotoxins"
+            value={fmtNum(stats.tox)}
+            sub={`${stats.toxUnit} on hand`}
+            Icon={Syringe}
+            tone="teal"
+            active={filter === "neurotoxin"}
+            onClick={() => toggleFilter("neurotoxin")}
+          />
+          <StatCard
+            label="Fillers"
+            value={fmtNum(stats.fill)}
+            sub={`${stats.fillUnit} on hand`}
+            Icon={Syringe}
+            tone="violet"
+            active={filter === "filler"}
+            onClick={() => toggleFilter("filler")}
+          />
+          <StatCard
+            label="Need reorder"
+            value={String(stats.reorder)}
+            sub={stats.reorder === 1 ? "product low or out" : "products low or out"}
+            Icon={AlertTriangle}
+            tone="amber"
+            active={filter === "reorder"}
+            onClick={() => toggleFilter("reorder")}
+          />
+          <StatCard
+            label="Expiring soon"
+            value={String(stats.expiring)}
+            sub="within 60 days or expired"
+            Icon={CalendarClock}
+            tone="orange"
+            active={filter === "expiring"}
+            onClick={() => toggleFilter("expiring")}
+          />
+          <div className="col-span-2 lg:col-span-1">
+            <StatCard label="Stock value" value={fmtMoney(stats.value)} sub="at your cost" Icon={Wallet} tone="slate" />
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search name, brand, lot, supplier"
+                aria-label="Search products"
+                className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-9 shadow-sm outline-none placeholder:text-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-400 hover:bg-slate-100"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {mode === "edit" && (
+              <button
+                className={btn.primary}
+                onClick={() => setAdding(true)}
+              >
+                <Plus className="h-4 w-4" /> Add product
+              </button>
+            )}
+          </div>
+          <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
+            <button className={chip(filter === "all")} onClick={() => setFilter("all")}>
+              All
+            </button>
+            {presentCategories.map((c) => (
+              <button key={c.value} className={chip(filter === c.value)} onClick={() => setFilter(c.value)}>
+                {c.plural}
+              </button>
+            ))}
+            <button className={chip(filter === "attention")} onClick={() => setFilter("attention")}>
+              <AlertTriangle className="h-3.5 w-3.5" /> Needs attention
+              {attentionCount > 0 && (
+                <span className={`rounded-full px-1.5 text-xs ${filter === "attention" ? "bg-white/20" : "bg-amber-100 text-amber-900"}`}>
+                  {attentionCount}
+                </span>
+              )}
+            </button>
+          </div>
+        </section>
+
+        {loadError && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+            {loadError}
+            <button className="font-semibold underline" onClick={loadProducts}>
+              Try again
+            </button>
+          </div>
+        )}
+
+        {!products && !loadError && (
+          <div className="space-y-3" aria-busy="true" aria-label="Loading inventory">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-20 animate-pulse rounded-2xl bg-white shadow-sm" />
+            ))}
+          </div>
+        )}
+
+        {products && products.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
+            <p className="font-semibold text-slate-900">No products yet</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {mode === "edit" ? "Add your first product to start tracking." : "Switch to Edit (top right) to add products."}
+            </p>
+            {mode === "edit" && (
+              <button className={`${btn.primary} mt-4`} onClick={() => setAdding(true)}>
+                <Plus className="h-4 w-4" /> Add product
+              </button>
+            )}
+          </div>
+        )}
+
+        {products && products.length > 0 && groups.length === 0 && (
+          <div className="rounded-2xl bg-white px-6 py-10 text-center text-slate-500 shadow-sm">
+            Nothing matches.{" "}
+            <button
+              className="font-semibold text-teal-700 underline"
+              onClick={() => {
+                setSearch("")
+                setFilter("all")
+              }}
+            >
+              Show everything
+            </button>
+          </div>
+        )}
+
+        {groups.map((g) => (
+          <section key={g.value} aria-labelledby={`h-${g.value}`}>
+            <h2 id={`h-${g.value}`} className="mb-2 flex items-baseline justify-between px-1">
+              <span className="text-sm font-bold uppercase tracking-wide text-slate-500">{g.plural}</span>
+              <span className="text-xs text-slate-400">
+                {g.items.length} {g.items.length === 1 ? "product" : "products"}
+              </span>
+            </h2>
+            <div
+              className={`divide-y overflow-hidden rounded-2xl border bg-white shadow-sm ${
+                mode === "edit" ? "divide-slate-200 border-amber-200" : "divide-slate-100 border-slate-200"
+              }`}
+            >
+              {g.items.map((p) =>
+                mode === "edit" ? (
+                  <EditRow
+                    key={p.id}
+                    product={p}
+                    onPatch={(c) => patch(p.id, c)}
+                    onStep={(d) => adjust(p.id, d, d < 0 ? "used" : "received")}
+                    onDelete={() => setDeleting(p)}
+                    onHistory={() => setHistoryFor(p)}
+                  />
+                ) : (
+                  <ViewRow key={p.id} product={p} onOpen={() => setHistoryFor(p)} />
+                ),
+              )}
+            </div>
+          </section>
+        ))}
+      </main>
+
+      <AddProductDialog
+        open={adding}
+        onClose={() => setAdding(false)}
+        defaultCategory={CATEGORIES.find((c) => c.value === filter)?.value ?? "neurotoxin"}
+        onAdded={(p) => setProducts((prev) => (prev && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev))}
+      />
+      <HistoryDialog product={historyFor} staffById={staffById} onClose={() => setHistoryFor(null)} />
+      <ConfirmDialog
+        open={!!deleting}
+        title="Delete product?"
+        message={`"${deleting?.name}" and its stock history will be permanently removed. To keep the history, set the quantity to 0 instead.`}
+        confirmLabel="Delete"
+        onClose={() => setDeleting(null)}
+        onConfirm={() => remove(deleting!)}
+      />
+      <Modal open={pwOpen} onClose={() => setPwOpen(false)} title="Change password">
+        <ChangePasswordForm onDone={() => setPwOpen(false)} />
+      </Modal>
+      {me.role === "owner" && (
+        <TeamDialog
+          open={teamOpen}
+          onClose={() => setTeamOpen(false)}
+          staff={staff}
+          me={me}
+          onChanged={() => {
+            loadStaff()
+            onStaffChanged()
+          }}
+        />
+      )}
+    </div>
+  )
+}
