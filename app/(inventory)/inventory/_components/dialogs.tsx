@@ -139,16 +139,20 @@ const DEFAULT_UNIT: Record<Category, string> = {
   other: "units",
 }
 
+export type ProductPrefill = { barcode?: string; lot_number?: string; expiration_date?: string }
+
 export function AddProductDialog({
   open,
   onClose,
   onAdded,
   defaultCategory,
+  prefill,
 }: {
   open: boolean
   onClose: () => void
   onAdded: (p: Product) => void
   defaultCategory: Category
+  prefill?: ProductPrefill
 }) {
   const blank = () => ({
     name: "",
@@ -158,9 +162,10 @@ export function AddProductDialog({
     quantity: "",
     par_level: "",
     unit_cost: "",
-    lot_number: "",
-    expiration_date: "",
+    lot_number: prefill?.lot_number ?? "",
+    expiration_date: prefill?.expiration_date ?? "",
     supplier: "",
+    barcode: prefill?.barcode ?? "",
   })
   const [f, setF] = useState(blank)
   const [busy, setBusy] = useState(false)
@@ -194,6 +199,7 @@ export function AddProductDialog({
         lot_number: f.lot_number.trim() || null,
         expiration_date: f.expiration_date || null,
         supplier: f.supplier.trim() || null,
+        barcode: f.barcode.trim() || null,
         ...values,
       })
       .select()
@@ -275,6 +281,10 @@ export function AddProductDialog({
         <div>
           <FieldLabel htmlFor="np-exp">Expires</FieldLabel>
           <input id="np-exp" type="date" className={input} value={f.expiration_date} onChange={set("expiration_date")} />
+        </div>
+        <div className="col-span-2">
+          <FieldLabel htmlFor="np-barcode">Barcode</FieldLabel>
+          <input id="np-barcode" className={`${input} font-mono`} value={f.barcode} onChange={set("barcode")} placeholder="Optional · scan to fill" maxLength={80} />
         </div>
         <div className="col-span-2">
           <FieldLabel htmlFor="np-sup">Supplier</FieldLabel>

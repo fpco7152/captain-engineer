@@ -47,10 +47,12 @@ create table public.products (
   lot_number text check (char_length(lot_number) <= 60),
   expiration_date date,
   notes text check (char_length(notes) <= 1000),
+  barcode text check (char_length(barcode) between 1 and 80),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   updated_by uuid references auth.users(id) on delete set null
 );
+create unique index products_barcode_key on public.products (barcode) where barcode is not null;
 alter table public.products enable row level security;
 
 create policy "staff read products" on public.products

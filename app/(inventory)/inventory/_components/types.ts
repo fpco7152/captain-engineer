@@ -23,6 +23,7 @@ export type Product = {
   lot_number: string | null
   expiration_date: string | null
   notes: string | null
+  barcode: string | null
   created_at: string
   updated_at: string
   updated_by: string | null
@@ -113,6 +114,7 @@ export function friendlyError(e: unknown): string {
   if (/banned/i.test(msg)) return "This login has been turned off. Ask the owner for access."
   if (/Failed to fetch|NetworkError|network/i.test(msg)) return "Can't reach the server. Check your internet connection."
   if (/JWT|expired|session/i.test(msg)) return "Your session expired. Please sign in again."
+  if (/products_barcode_key|duplicate key/i.test(msg)) return "That barcode is already assigned to another product."
   if (/violates check constraint/i.test(msg)) return "That value isn't allowed. Numbers must be zero or more."
   if (/row-level security|permission denied/i.test(msg)) return "Your login doesn't have permission to do that."
   return msg.length > 140 ? "Something went wrong. Please try again." : msg

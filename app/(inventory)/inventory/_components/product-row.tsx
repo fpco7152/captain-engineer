@@ -66,7 +66,18 @@ export function ViewRow({ product, onOpen }: { product: Product; onOpen: () => v
 export type FieldPatch = Partial<
   Pick<
     Product,
-    "name" | "category" | "brand" | "unit" | "quantity" | "par_level" | "unit_cost" | "supplier" | "lot_number" | "expiration_date" | "notes"
+    | "name"
+    | "category"
+    | "brand"
+    | "unit"
+    | "quantity"
+    | "par_level"
+    | "unit_cost"
+    | "supplier"
+    | "lot_number"
+    | "expiration_date"
+    | "notes"
+    | "barcode"
   >
 >
 
@@ -169,7 +180,11 @@ export function EditRow({
             <FieldLabel>Expires</FieldLabel>
             <EditableDate value={p.expiration_date} onSave={(v) => onPatch({ expiration_date: v })} label="Expiration date" />
           </div>
-          <div className="col-span-2 md:col-span-3">
+          <div className="col-span-2">
+            <FieldLabel>Barcode</FieldLabel>
+            <EditableText value={p.barcode} onSave={(v) => onPatch({ barcode: v })} label="Barcode" maxLength={80} placeholder="Scan or type" />
+          </div>
+          <div className="col-span-2">
             <FieldLabel>Supplier</FieldLabel>
             <EditableText value={p.supplier} onSave={(v) => onPatch({ supplier: v })} label="Supplier" />
           </div>

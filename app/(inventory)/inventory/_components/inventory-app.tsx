@@ -10,6 +10,7 @@ import {
   LogOut,
   Pencil,
   Plus,
+  ScanBarcode,
   Search,
   Syringe,
   Wallet,
@@ -31,7 +32,8 @@ import {
   productStatuses,
 } from "./types"
 import { EditRow, type FieldPatch, ViewRow } from "./product-row"
-import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, btn } from "./dialogs"
+import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, type ProductPrefill, btn } from "./dialogs"
+import { ScannerSheet } from "./scanner"
 
 type Filter = "all" | "attention" | "reorder" | "expiring" | Category
 
@@ -194,6 +196,8 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
   const [search, setSearch] = useState("")
   const [live, setLive] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [prefill, setPrefill] = useState<ProductPrefill | undefined>()
+  const [scanning, setScanning] = useState(false)
   const [historyFor, setHistoryFor] = useState<Product | null>(null)
   const [deleting, setDeleting] = useState<Product | null>(null)
   const [pwOpen, setPwOpen] = useState(false)
@@ -272,28 +276,34 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     replace(normalizeProduct(data as Product))
   }
 
-  const adjust = (id: string, delta: number, reason: string, quiet = false) => {
+  const adjust = (id: string, delta: number, reason: string, opts: { quiet?: boolean; note?: string } = {}): Promise<boolean> => {
     setProducts((prev) => prev && prev.map((p) => (p.id === id ? { ...p, quantity: Math.max(0, p.quantity + delta) } : p)))
-    const prevTask = queues.current.get(id) ?? Promise.resolve()
+    const prevTask = queues.current.get(id) ?? Promise.resolve(true)
     const task = prevTask.then(async () => {
-      const { data, error } = await supabase.rpc("adjust_stock", { p_product_id: id, p_change: delta, p_reason: reason })
+      const { data, error } = await supabase.rpc("adjust_stock", {
+        p_product_id: id,
+        p_change: delta,
+        p_reason: reason,
+        p_note: opts.note ?? null,
+      })
       if (error) {
         toast.error(friendlyError(error))
         await loadProducts()
-        return
+        return false
       }
       replace(normalizeProduct(data as Product))
+      return true
     })
     queues.current.set(id, task)
 
-    if (quiet) return
     const p = products?.find((x) => x.id === id)
-    if (!p) return
+    if (opts.quiet || !p) return task
     const verb = delta < 0 ? "Used" : "Received"
     toast(`${verb} ${fmtNum(Math.abs(delta))} ${singular(p.unit, delta)}`, {
       description: p.name,
-      action: { label: "Undo", onClick: () => adjust(id, -delta, "count correction", true) },
+      action: { label: "Undo", onClick: () => adjust(id, -delta, "count correction", { quiet: true }) },
     })
+    return task
   }
 
   const remove = async (p: Product) => {
@@ -364,7 +374,7 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       if (filter === "expiring" && !st.some((k) => k === "expired" || k === "expiring")) return false
       if (CATEGORIES.some((c) => c.value === filter) && p.category !== filter) return false
       if (!q) return true
-      return [p.name, p.brand, p.lot_number, p.supplier].some((v) => v?.toLowerCase().includes(q))
+      return [p.name, p.brand, p.lot_number, p.supplier, p.barcode].some((v) => v?.toLowerCase().includes(q))
     })
   }, [products, filter, search])
 
@@ -387,7 +397,7 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     }`
 
   return (
-    <div className="min-h-dvh bg-slate-50 pb-16 text-slate-900">
+    <div className="min-h-dvh bg-slate-50 pb-28 text-slate-900 sm:pb-16">
       <header className={`sticky top-0 z-30 border-b bg-white/95 backdrop-blur ${mode === "edit" ? "border-amber-300" : "border-slate-200"}`}>
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -486,14 +496,22 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
                 </button>
               )}
             </div>
-            {mode === "edit" && (
-              <button
-                className={btn.primary}
-                onClick={() => setAdding(true)}
-              >
-                <Plus className="h-4 w-4" /> Add product
+            <div className="flex gap-2">
+              <button className={`${btn.primary} hidden sm:inline-flex`} onClick={() => setScanning(true)}>
+                <ScanBarcode className="h-4 w-4" /> Scan
               </button>
-            )}
+              {mode === "edit" && (
+                <button
+                  className={`${btn.secondary} flex-1 sm:flex-none`}
+                  onClick={() => {
+                    setPrefill(undefined)
+                    setAdding(true)
+                  }}
+                >
+                  <Plus className="h-4 w-4" /> Add product
+                </button>
+              )}
+            </div>
           </div>
           <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
             <button className={chip(filter === "all")} onClick={() => setFilter("all")}>
@@ -539,7 +557,13 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
               {mode === "edit" ? "Add your first product to start tracking." : "Switch to Edit (top right) to add products."}
             </p>
             {mode === "edit" && (
-              <button className={`${btn.primary} mt-4`} onClick={() => setAdding(true)}>
+              <button
+                className={`${btn.primary} mt-4`}
+                onClick={() => {
+                  setPrefill(undefined)
+                  setAdding(true)
+                }}
+              >
                 <Plus className="h-4 w-4" /> Add product
               </button>
             )}
@@ -593,8 +617,32 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
         ))}
       </main>
 
+      <ScannerSheet
+        open={scanning}
+        onClose={() => setScanning(false)}
+        products={products ?? []}
+        mode={mode}
+        onEnterEdit={() => setMode("edit")}
+        onAdjust={(id, delta, note) => adjust(id, delta, delta < 0 ? "used" : "received", { note })}
+        onPatch={patch}
+        onCreate={(pf) => {
+          setPrefill(pf)
+          setAdding(true)
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => setScanning(true)}
+        aria-label="Scan a barcode"
+        className={`fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-40 flex h-16 w-16 items-center justify-center rounded-full bg-teal-700 text-white shadow-xl shadow-teal-900/30 active:scale-95 sm:hidden ${
+          scanning ? "hidden" : ""
+        }`}
+      >
+        <ScanBarcode className="h-7 w-7" />
+      </button>
       <AddProductDialog
         open={adding}
+        prefill={prefill}
         onClose={() => setAdding(false)}
         defaultCategory={CATEGORIES.find((c) => c.value === filter)?.value ?? "neurotoxin"}
         onAdded={(p) => setProducts((prev) => (prev && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev))}
