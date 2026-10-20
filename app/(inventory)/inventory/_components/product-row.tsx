@@ -63,6 +63,42 @@ export function ViewRow({ product, onOpen }: { product: Product; onOpen: () => v
   )
 }
 
+export function AdjustRow({
+  product,
+  onStep,
+  onSet,
+  onHistory,
+}: {
+  product: Product
+  onStep: (delta: number) => void
+  onSet: (v: number) => Promise<void>
+  onHistory: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:gap-6">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="truncate font-semibold text-slate-900">{product.name}</p>
+        <Meta product={product} />
+        <StatusPills product={product} />
+      </div>
+      <div className="flex items-center gap-2 sm:w-[22rem]">
+        <div className="min-w-0 flex-1">
+          <QuantityStepper value={product.quantity} unit={product.unit} onStep={onStep} onSet={onSet} />
+        </div>
+        <button
+          type="button"
+          onClick={onHistory}
+          title="Stock history"
+          aria-label={`Stock history for ${product.name}`}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+        >
+          <History className="h-5 w-5" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export type FieldPatch = Partial<
   Pick<
     Product,

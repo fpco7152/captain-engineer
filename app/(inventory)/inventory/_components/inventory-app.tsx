@@ -9,6 +9,7 @@ import {
   KeyRound,
   LogOut,
   Pencil,
+  ArrowDownUp,
   Plus,
   ScanBarcode,
   Search,
@@ -31,7 +32,7 @@ import {
   normalizeProduct,
   productStatuses,
 } from "./types"
-import { EditRow, type FieldPatch, ViewRow } from "./product-row"
+import { AdjustRow, EditRow, type FieldPatch, ViewRow } from "./product-row"
 import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, type ProductPrefill, btn } from "./dialogs"
 import { ScannerSheet } from "./scanner"
 
@@ -49,26 +50,23 @@ function mostCommonUnit(items: Product[]) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "items"
 }
 
+const MODES = [
+  { m: "view", label: "View", Icon: Eye, active: "bg-white text-slate-900 shadow-sm" },
+  { m: "adjust", label: "Adjust", Icon: ArrowDownUp, active: "bg-teal-700 text-white shadow-sm" },
+  { m: "manage", label: "Manage", Icon: Pencil, active: "bg-amber-500 text-white shadow-sm" },
+] as const
+
 function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
   return (
     <div role="group" aria-label="Screen mode" className="inline-flex rounded-xl bg-slate-100 p-1 ring-1 ring-inset ring-slate-200">
-      {(
-        [
-          { m: "view", label: "View", Icon: Eye },
-          { m: "edit", label: "Edit", Icon: Pencil },
-        ] as const
-      ).map(({ m, label, Icon }) => (
+      {MODES.map(({ m, label, Icon, active }) => (
         <button
           key={m}
           type="button"
           aria-pressed={mode === m}
           onClick={() => onChange(m)}
-          className={`inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold transition ${
-            mode === m
-              ? m === "edit"
-                ? "bg-amber-500 text-white shadow-sm"
-                : "bg-white text-slate-900 shadow-sm"
-              : "text-slate-500 hover:text-slate-800"
+          className={`inline-flex h-9 items-center gap-1 rounded-lg px-2 text-xs font-semibold transition sm:gap-1.5 sm:px-3 sm:text-sm ${
+            mode === m ? active : "text-slate-500 hover:text-slate-800"
           }`}
         >
           <Icon className="h-4 w-4" />
@@ -77,6 +75,23 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
       ))}
     </div>
   )
+}
+
+const MODE_BANNER: Record<Exclude<Mode, "view">, { box: string; text: string; hover: string; title: string; body: string }> = {
+  adjust: {
+    box: "border-teal-200 bg-teal-50",
+    text: "text-teal-900",
+    hover: "hover:bg-teal-100",
+    title: "Adjust mode.",
+    body: "Change counts with − / + or Scan. Details are locked.",
+  },
+  manage: {
+    box: "border-amber-200 bg-amber-50",
+    text: "text-amber-900",
+    hover: "hover:bg-amber-100",
+    title: "Manage mode.",
+    body: "Edit anything, add or delete products. Saves automatically.",
+  },
 }
 
 function AccountMenu({
@@ -206,7 +221,8 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
   useEffect(() => {
     try {
       const saved = localStorage.getItem(MODE_KEY)
-      if (saved === "edit" || saved === "view") setModeState(saved)
+      if (saved === "view" || saved === "adjust" || saved === "manage") setModeState(saved)
+      else if (saved === "edit") setModeState("manage")
     } catch {}
   }, [])
 
@@ -398,13 +414,19 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
 
   return (
     <div className="min-h-dvh bg-slate-50 pb-28 text-slate-900 sm:pb-16">
-      <header className={`sticky top-0 z-30 border-b bg-white/95 backdrop-blur ${mode === "edit" ? "border-amber-300" : "border-slate-200"}`}>
+      <header className={`sticky top-0 z-30 border-b bg-white/95 backdrop-blur ${
+          mode === "manage" ? "border-amber-300" : mode === "adjust" ? "border-teal-300" : "border-slate-200"
+        }`}>
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white">
+            <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white">
               <Syringe className="h-5 w-5" />
+              <span
+                className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white sm:hidden ${live ? "bg-emerald-500" : "bg-slate-300"}`}
+                aria-label={live ? "Live" : "Connecting"}
+              />
             </div>
-            <div className="min-w-0">
+            <div className="hidden min-w-0 sm:block">
               <h1 className="truncate text-base font-bold leading-tight sm:text-lg">Inventory</h1>
               <p className="flex items-center gap-1.5 text-xs text-slate-500">
                 <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-slate-300"}`} />
@@ -417,13 +439,13 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
             <AccountMenu me={me} username={username} onPassword={() => setPwOpen(true)} onExport={exportCsv} />
           </div>
         </div>
-        {mode === "edit" && (
-          <div className="border-t border-amber-200 bg-amber-50">
-            <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-sm text-amber-900">
+        {mode !== "view" && (
+          <div className={`border-t ${MODE_BANNER[mode].box}`}>
+            <div className={`mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-sm ${MODE_BANNER[mode].text}`}>
               <span>
-                <strong>Edit mode.</strong> Tap any number to change it. Changes save automatically.
+                <strong>{MODE_BANNER[mode].title}</strong> {MODE_BANNER[mode].body}
               </span>
-              <button onClick={() => setMode("view")} className="shrink-0 rounded-md px-2 py-1 font-semibold hover:bg-amber-100">
+              <button onClick={() => setMode("view")} className={`shrink-0 rounded-md px-2 py-1 font-semibold ${MODE_BANNER[mode].hover}`}>
                 Done
               </button>
             </div>
@@ -500,7 +522,7 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
               <button className={`${btn.primary} hidden sm:inline-flex`} onClick={() => setScanning(true)}>
                 <ScanBarcode className="h-4 w-4" /> Scan
               </button>
-              {mode === "edit" && (
+              {mode === "manage" && (
                 <button
                   className={`${btn.secondary} flex-1 sm:flex-none`}
                   onClick={() => {
@@ -554,9 +576,9 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
           <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
             <p className="font-semibold text-slate-900">No products yet</p>
             <p className="mt-1 text-sm text-slate-500">
-              {mode === "edit" ? "Add your first product to start tracking." : "Switch to Edit (top right) to add products."}
+              {mode === "manage" ? "Add your first product to start tracking." : "Switch to Manage (top right) to add products."}
             </p>
-            {mode === "edit" && (
+            {mode === "manage" && (
               <button
                 className={`${btn.primary} mt-4`}
                 onClick={() => {
@@ -595,11 +617,23 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
             </h2>
             <div
               className={`divide-y overflow-hidden rounded-2xl border bg-white shadow-sm ${
-                mode === "edit" ? "divide-slate-200 border-amber-200" : "divide-slate-100 border-slate-200"
+                mode === "manage"
+                  ? "divide-slate-200 border-amber-200"
+                  : mode === "adjust"
+                    ? "divide-slate-100 border-teal-200"
+                    : "divide-slate-100 border-slate-200"
               }`}
             >
               {g.items.map((p) =>
-                mode === "edit" ? (
+                mode === "adjust" ? (
+                  <AdjustRow
+                    key={p.id}
+                    product={p}
+                    onStep={(d) => adjust(p.id, d, d < 0 ? "used" : "received")}
+                    onSet={(v) => patch(p.id, { quantity: v })}
+                    onHistory={() => setHistoryFor(p)}
+                  />
+                ) : mode === "manage" ? (
                   <EditRow
                     key={p.id}
                     product={p}
@@ -622,7 +656,7 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
         onClose={() => setScanning(false)}
         products={products ?? []}
         mode={mode}
-        onEnterEdit={() => setMode("edit")}
+        onSwitchMode={setMode}
         onAdjust={(id, delta, note) => adjust(id, delta, delta < 0 ? "used" : "received", { note })}
         onPatch={patch}
         onCreate={(pf) => {

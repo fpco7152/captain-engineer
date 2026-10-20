@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { ArrowDownToLine, ArrowUpFromLine, CameraOff, Link2, Loader2, Minus, Pencil, Plus, ScanBarcode, Search, X } from "lucide-react"
+import { ArrowDownToLine, ArrowDownUp, ArrowUpFromLine, CameraOff, Link2, Loader2, Minus, Pencil, Plus, ScanBarcode, Search, X } from "lucide-react"
 import { type Mode, type Product, fmtDate, fmtNum } from "./types"
 import { type ScanInfo, parseScan, sameBarcode } from "./barcode"
 import { type ProductPrefill, btn } from "./dialogs"
@@ -147,16 +147,19 @@ function ScanFacts({ info }: { info: ScanInfo }) {
 function RecordMovement({
   product,
   info,
+  allowDetailUpdate,
   onRecord,
 }: {
   product: Product
   info: ScanInfo
+  allowDetailUpdate: boolean
   onRecord: (delta: number, updateLotExpiry: boolean) => Promise<void>
 }) {
   const [direction, setDirection] = useState<Direction>("in")
   const [qty, setQty] = useState("1")
   const [busy, setBusy] = useState(false)
-  const lotDiffers = (!!info.lot && info.lot !== product.lot_number) || (!!info.expiry && info.expiry !== product.expiration_date)
+  const lotDiffers =
+    allowDetailUpdate && ((!!info.lot && info.lot !== product.lot_number) || (!!info.expiry && info.expiry !== product.expiration_date))
   const [updateLot, setUpdateLot] = useState(true)
 
   useEffect(() => {
@@ -310,7 +313,7 @@ export function ScannerSheet({
   onClose,
   products,
   mode,
-  onEnterEdit,
+  onSwitchMode,
   onAdjust,
   onPatch,
   onCreate,
@@ -319,7 +322,7 @@ export function ScannerSheet({
   onClose: () => void
   products: Product[]
   mode: Mode
-  onEnterEdit: () => void
+  onSwitchMode: (m: Mode) => void
   onAdjust: (id: string, delta: number, note: string) => Promise<boolean>
   onPatch: (id: string, patch: FieldPatch) => Promise<void>
   onCreate: (prefill: ProductPrefill) => void
@@ -410,11 +413,12 @@ export function ScannerSheet({
                 </div>
               </div>
               <ScanFacts info={info} />
-              {mode === "edit" ? (
+              {mode !== "view" ? (
                 <RecordMovement
                   key={product.id + info.key}
                   product={product}
                   info={info}
+                  allowDetailUpdate={mode === "manage"}
                   onRecord={async (delta, updateLot) => {
                     if (updateLot) {
                       await onPatch(product.id, {
@@ -434,8 +438,8 @@ export function ScannerSheet({
               ) : (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                   You&apos;re in View mode, so this scan only looks the product up.
-                  <button className={`${btn.primary} mt-3 w-full`} onClick={onEnterEdit}>
-                    <Pencil className="h-4 w-4" /> Switch to Edit to record in / out
+                  <button className={`${btn.primary} mt-3 w-full`} onClick={() => onSwitchMode("adjust")}>
+                    <ArrowDownUp className="h-4 w-4" /> Switch to Adjust to record in / out
                   </button>
                 </div>
               )}
@@ -452,11 +456,11 @@ export function ScannerSheet({
                 <p className="text-sm text-slate-500">No product uses this code yet.</p>
               </div>
               <ScanFacts info={info} />
-              {mode !== "edit" ? (
+              {mode !== "manage" ? (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                  Switch to Edit mode to set this barcode up.
-                  <button className={`${btn.primary} mt-3 w-full`} onClick={onEnterEdit}>
-                    <Pencil className="h-4 w-4" /> Switch to Edit
+                  New barcodes are set up in Manage mode.
+                  <button className={`${btn.primary} mt-3 w-full`} onClick={() => onSwitchMode("manage")}>
+                    <Pencil className="h-4 w-4" /> Switch to Manage
                   </button>
                 </div>
               ) : linking ? (

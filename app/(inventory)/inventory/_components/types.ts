@@ -49,7 +49,7 @@ export type Movement = {
   created_at: string
 }
 
-export type Mode = "view" | "edit"
+export type Mode = "view" | "adjust" | "manage"
 
 // Logins are usernames; Supabase Auth stores them as internal, non-deliverable addresses.
 const LOGIN_DOMAIN = "@inventory.local"
