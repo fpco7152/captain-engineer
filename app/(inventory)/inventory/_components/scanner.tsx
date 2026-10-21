@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDownToLine, ArrowDownUp, ArrowUpFromLine, CameraOff, Link2, Loader2, Minus, Pencil, Plus, ScanBarcode, Search, X } from "lucide-react"
-import { type Mode, type Product, fmtDate, fmtNum } from "./types"
+import { type Lot, type Mode, type Product, fmtDate, fmtNum } from "./types"
+import { type Direction as LotDirection, LotMovement, type OutReason } from "./lot-movement"
 import { type ScanInfo, parseScan, sameBarcode } from "./barcode"
 import { type ProductPrefill, btn } from "./dialogs"
 import type { FieldPatch } from "./product-row"
@@ -308,22 +309,40 @@ function LinkToExisting({ products, onPick, onCancel }: { products: Product[]; o
   )
 }
 
+export type StockPreset = { productId: string; direction: LotDirection }
+
+function savedDirection(): LotDirection {
+  try {
+    return localStorage.getItem(DIRECTION_KEY) === "out" ? "out" : "in"
+  } catch {
+    return "in"
+  }
+}
+
 export function ScannerSheet({
   open,
   onClose,
   products,
+  lots,
+  preset,
   mode,
   onSwitchMode,
   onAdjust,
+  onReceive,
+  onUseLot,
   onPatch,
   onCreate,
 }: {
   open: boolean
   onClose: () => void
   products: Product[]
+  lots: Lot[]
+  preset: StockPreset | null
   mode: Mode
   onSwitchMode: (m: Mode) => void
   onAdjust: (id: string, delta: number, note: string) => Promise<boolean>
+  onReceive: (productId: string, lot: string, expiry: string, qty: number, note: string) => Promise<boolean>
+  onUseLot: (lot: Lot, qty: number, reason: OutReason, note: string) => Promise<boolean>
   onPatch: (id: string, patch: FieldPatch) => Promise<void>
   onCreate: (prefill: ProductPrefill) => void
 }) {
@@ -350,9 +369,20 @@ export function ScannerSheet({
     }
   }, [open, onClose])
 
-  const product = info
-    ? (linkedId && products.find((p) => p.id === linkedId)) || products.find((p) => sameBarcode(p.barcode, info)) || null
-    : null
+  const presetProduct = preset ? products.find((p) => p.id === preset.productId) ?? null : null
+  const product =
+    presetProduct ??
+    (info ? (linkedId && products.find((p) => p.id === linkedId)) || products.find((p) => sameBarcode(p.barcode, info)) || null : null)
+  const productLots = product ? lots.filter((l) => l.product_id === product.id) : []
+
+  const recorded = (msg: string) => {
+    if (preset) {
+      onClose()
+      return
+    }
+    setLastRecorded(msg)
+    scanNext()
+  }
 
   const handleCode = (text: string) => {
     const parsed = parseScan(text)
@@ -373,12 +403,25 @@ export function ScannerSheet({
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Scan barcode">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={preset ? "Stock in or out" : "Scan barcode"}
+    >
       <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-[2px]" onClick={onClose} />
       <div className="relative flex max-h-[96dvh] w-full flex-col rounded-t-2xl bg-white shadow-2xl sm:max-w-lg sm:rounded-2xl">
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
           <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
-            <ScanBarcode className="h-5 w-5 text-teal-700" /> Scan
+            {preset ? (
+              <>
+                <ArrowDownUp className="h-5 w-5 text-teal-700" /> Stock in / out
+              </>
+            ) : (
+              <>
+                <ScanBarcode className="h-5 w-5 text-teal-700" /> Scan
+              </>
+            )}
           </h2>
           <button onClick={onClose} aria-label="Close scanner" className="-mr-2 rounded-lg p-2 text-slate-500 hover:bg-slate-100">
             <X className="h-5 w-5" />
@@ -386,7 +429,7 @@ export function ScannerSheet({
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          {!info && (
+          {!info && !presetProduct && (
             <>
               {lastRecorded && (
                 <p role="status" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
@@ -398,13 +441,18 @@ export function ScannerSheet({
             </>
           )}
 
-          {info && product && (
+          {product && (info || presetProduct) && (
             <>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-lg font-bold leading-tight text-slate-900">{product.name}</p>
                   <p className="text-sm text-slate-500">
-                    {[product.brand, product.lot_number && `Lot ${product.lot_number}`].filter(Boolean).join(" · ")}
+                    {product.track_lots
+                      ? (() => {
+                          const c = productLots.filter((l) => l.quantity > 0).length
+                          return c === 0 ? "No lots in stock" : `${c} ${c === 1 ? "lot" : "lots"} in stock`
+                        })()
+                      : [product.brand, product.lot_number && `Lot ${product.lot_number}`].filter(Boolean).join(" · ")}
                   </p>
                 </div>
                 <div className="shrink-0 text-right">
@@ -412,26 +460,41 @@ export function ScannerSheet({
                   <p className="text-xs text-slate-500">{product.unit} on hand</p>
                 </div>
               </div>
-              <ScanFacts info={info} />
-              {mode !== "view" ? (
-                <RecordMovement
-                  key={product.id + info.key}
+              {info && <ScanFacts info={info} />}
+              {mode !== "view" && product.track_lots ? (
+                <LotMovement
+                  key={product.id + (info?.key ?? "") + (preset?.direction ?? "")}
                   product={product}
+                  lots={productLots}
                   info={info}
-                  allowDetailUpdate={mode === "manage"}
+                  initialDirection={preset?.direction ?? savedDirection()}
+                  onReceive={async (lot, expiry, qty) => {
+                    const ok = await onReceive(product.id, lot, expiry, qty, info ? "Scanned" : "")
+                    if (ok) recorded(`Received ${fmtNum(qty)} ${product.unit} of ${product.name} (lot ${lot}).`)
+                    return ok
+                  }}
+                  onUse={async (lot, qty, reason) => {
+                    const ok = await onUseLot(lot, qty, reason, info ? "Scanned" : "")
+                    if (ok) recorded(`Checked out ${fmtNum(qty)} ${product.unit} of ${product.name} (lot ${lot.lot_number}).`)
+                    return ok
+                  }}
+                />
+              ) : mode !== "view" ? (
+                <RecordMovement
+                  key={product.id + (info?.key ?? "")}
+                  product={product}
+                  info={info ?? { key: "" }}
+                  allowDetailUpdate={mode === "manage" && !!info}
                   onRecord={async (delta, updateLot) => {
-                    if (updateLot) {
+                    if (updateLot && info) {
                       await onPatch(product.id, {
                         ...(info.lot ? { lot_number: info.lot } : {}),
                         ...(info.expiry ? { expiration_date: info.expiry } : {}),
                       }).catch(() => {})
                     }
-                    const ok = await onAdjust(product.id, delta, "Scanned")
+                    const ok = await onAdjust(product.id, delta, info ? "Scanned" : "")
                     if (ok) {
-                      setLastRecorded(
-                        `${delta > 0 ? "Added" : "Removed"} ${fmtNum(Math.abs(delta))} ${product.unit} ${delta > 0 ? "to" : "from"} ${product.name}.`,
-                      )
-                      scanNext()
+                      recorded(`${delta > 0 ? "Added" : "Removed"} ${fmtNum(Math.abs(delta))} ${product.unit} ${delta > 0 ? "to" : "from"} ${product.name}.`)
                     }
                   }}
                 />
@@ -443,13 +506,15 @@ export function ScannerSheet({
                   </button>
                 </div>
               )}
-              <button type="button" className={`${btn.secondary} w-full`} onClick={scanNext}>
-                <ScanBarcode className="h-4 w-4" /> Scan another
-              </button>
+              {!preset && (
+                <button type="button" className={`${btn.secondary} w-full`} onClick={scanNext}>
+                  <ScanBarcode className="h-4 w-4" /> Scan another
+                </button>
+              )}
             </>
           )}
 
-          {info && !product && (
+          {info && !product && !preset && (
             <>
               <div>
                 <p className="text-lg font-bold text-slate-900">New barcode</p>
@@ -469,11 +534,16 @@ export function ScannerSheet({
                   onCancel={() => setLinking(false)}
                   onPick={async (p) => {
                     try {
-                      await onPatch(p.id, {
-                        barcode: info.key,
-                        ...(info.lot ? { lot_number: info.lot } : {}),
-                        ...(info.expiry ? { expiration_date: info.expiry } : {}),
-                      })
+                      await onPatch(
+                        p.id,
+                        p.track_lots
+                          ? { barcode: info.key }
+                          : {
+                              barcode: info.key,
+                              ...(info.lot ? { lot_number: info.lot } : {}),
+                              ...(info.expiry ? { expiration_date: info.expiry } : {}),
+                            },
+                      )
                       setLinkedId(p.id)
                       setLinking(false)
                     } catch {}

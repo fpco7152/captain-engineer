@@ -6,13 +6,17 @@ import { toast } from "sonner"
 import { supabase } from "@/lib/supabase"
 import {
   CATEGORIES,
+  LOT_CATEGORIES,
   type Category,
+  type Lot,
   type Movement,
   type Product,
   type Staff,
+  fmtDate,
   fmtNum,
   friendlyError,
   normalizeProduct,
+  sortLots,
 } from "./types"
 import { FieldLabel } from "./fields"
 
@@ -166,6 +170,7 @@ export function AddProductDialog({
     expiration_date: prefill?.expiration_date ?? "",
     supplier: "",
     barcode: prefill?.barcode ?? "",
+    track_lots: LOT_CATEGORIES.includes(defaultCategory),
   })
   const [f, setF] = useState(blank)
   const [busy, setBusy] = useState(false)
@@ -188,6 +193,9 @@ export function AddProductDialog({
     if (!f.name.trim()) return setError("Give the product a name.")
     if (Object.values(values).some((v) => !Number.isFinite(v) || v < 0 || v >= 1_000_000))
       return setError("Quantities and cost must be numbers zero or more.")
+    const startingLot = f.track_lots && values.quantity > 0
+    if (startingLot && (!f.lot_number.trim() || !f.expiration_date))
+      return setError("Enter the lot number and expiration for the starting count, or leave On hand at 0 and receive it later.")
     setBusy(true)
     const { data, error: err } = await supabase
       .from("products")
@@ -196,16 +204,31 @@ export function AddProductDialog({
         category: f.category,
         brand: f.brand.trim() || null,
         unit: f.unit.trim() || DEFAULT_UNIT[f.category],
-        lot_number: f.lot_number.trim() || null,
-        expiration_date: f.expiration_date || null,
+        lot_number: f.track_lots ? null : f.lot_number.trim() || null,
+        expiration_date: f.track_lots ? null : f.expiration_date || null,
         supplier: f.supplier.trim() || null,
         barcode: f.barcode.trim() || null,
+        track_lots: f.track_lots,
         ...values,
+        quantity: f.track_lots ? 0 : values.quantity,
       })
       .select()
       .single()
+    if (err) {
+      setBusy(false)
+      return setError(friendlyError(err))
+    }
+    if (startingLot) {
+      const { error: lotErr } = await supabase.rpc("receive_stock", {
+        p_product_id: data.id,
+        p_lot: f.lot_number,
+        p_expiry: f.expiration_date,
+        p_qty: values.quantity,
+        p_note: "Starting count",
+      })
+      if (lotErr) toast.error(`Product added, but the starting count wasn't saved: ${friendlyError(lotErr)}`)
+    }
     setBusy(false)
-    if (err) return setError(friendlyError(err))
     onAdded(normalizeProduct(data as Product))
     toast.success(`Added ${data.name}`)
     onClose()
@@ -244,7 +267,7 @@ export function AddProductDialog({
             value={f.category}
             onChange={(e) => {
               const c = e.target.value as Category
-              setF((prev) => ({ ...prev, category: c, unit: DEFAULT_UNIT[c] }))
+              setF((prev) => ({ ...prev, category: c, unit: DEFAULT_UNIT[c], track_lots: LOT_CATEGORIES.includes(c) }))
             }}
           >
             {CATEGORIES.map((c) => (
@@ -276,12 +299,24 @@ export function AddProductDialog({
         </div>
         <div>
           <FieldLabel htmlFor="np-lot">Lot #</FieldLabel>
-          <input id="np-lot" className={input} value={f.lot_number} onChange={set("lot_number")} placeholder="Optional" maxLength={60} />
+          <input id="np-lot" className={input} value={f.lot_number} onChange={set("lot_number")} placeholder={f.track_lots ? "Needed for a starting count" : "Optional"} maxLength={60} />
         </div>
         <div>
           <FieldLabel htmlFor="np-exp">Expires</FieldLabel>
           <input id="np-exp" type="date" className={input} value={f.expiration_date} onChange={set("expiration_date")} />
         </div>
+        <label className="col-span-2 flex items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5 text-sm">
+          <input
+            type="checkbox"
+            checked={f.track_lots}
+            onChange={(e) => setF((prev) => ({ ...prev, track_lots: e.target.checked }))}
+            className="mt-0.5 h-5 w-5 accent-teal-700"
+          />
+          <span>
+            <span className="font-medium text-slate-900">Track by lot &amp; expiration</span>
+            <span className="block text-slate-500">Recommended for toxins and fillers. A starting count needs its lot and expiration.</span>
+          </span>
+        </label>
         <div className="col-span-2">
           <FieldLabel htmlFor="np-barcode">Barcode</FieldLabel>
           <input id="np-barcode" className={`${input} font-mono`} value={f.barcode} onChange={set("barcode")} placeholder="Optional · scan to fill" maxLength={80} />
@@ -303,17 +338,19 @@ const REASON_LABEL: Record<string, string> = {
   used: "Used",
   received: "Received",
   wasted: "Wasted",
-  expired: "Expired",
+  expired: "Discarded (expired)",
   returned: "Returned",
   "count correction": "Count correction",
 }
 
 export function HistoryDialog({
   product,
+  lots,
   staffById,
   onClose,
 }: {
   product: Product | null
+  lots: Lot[]
   staffById: Map<string, Staff>
   onClose: () => void
 }) {
@@ -336,8 +373,32 @@ export function HistoryDialog({
       })
   }, [product])
 
+  const inStock = sortLots(lots).filter((l) => l.quantity > 0)
+
   return (
     <Modal open={!!product} onClose={onClose} title={product ? `History · ${product.name}` : "History"}>
+      {product?.track_lots && (
+        <div className="mb-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Lots in stock</p>
+          {inStock.length === 0 ? (
+            <p className="text-sm text-slate-500">None.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+              {inStock.map((l) => (
+                <li key={l.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span>
+                    <span className="font-mono font-semibold text-slate-900">Lot {l.lot_number}</span>
+                    <span className="text-slate-500"> · exp {fmtDate(l.expiration_date)}</span>
+                  </span>
+                  <span className="font-semibold tabular-nums">
+                    {fmtNum(l.quantity)} {product.unit}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {error && <p className="text-sm text-rose-700">{error}</p>}
       {!rows && !error && (
         <div className="flex justify-center py-10">
@@ -352,6 +413,7 @@ export function HistoryDialog({
               <div className="min-w-0">
                 <p className="font-medium text-slate-900">
                   {REASON_LABEL[m.reason] ?? m.reason}
+                  {m.lot_number && <span className="font-mono font-normal text-slate-700"> · Lot {m.lot_number}</span>}
                   <span className="font-normal text-slate-500"> · now {fmtNum(m.quantity_after)} {product?.unit}</span>
                 </p>
                 <p className="text-sm text-slate-500">

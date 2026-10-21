@@ -314,3 +314,16 @@ insert into public.products (name, category, brand, unit, par_level) values
   ('Juvéderm Voluma XC 1mL', 'filler', 'Allergan', 'syringes', 2),
   ('Juvéderm Ultra XC 1mL', 'filler', 'Allergan', 'syringes', 2),
   ('Restylane Lyft 1mL', 'filler', 'Galderma', 'syringes', 2);
+
+-- ---------------------------------------------------------------------------
+-- Lot & expiration tracking (see migrations lot_tracking_tables / lot_tracking_logic
+-- / lots_after_fk_guard in the Supabase project for the full function bodies).
+-- products.track_lots      : when true, stock changes only through lots.
+-- product_lots             : one row per lot with its own expiration and count.
+-- receive_stock(...)       : receive into a lot (lot + expiration required, not expired,
+--                            a known lot must keep its expiration).
+-- use_stock(lot, qty, why) : check out from a lot (used / wasted / expired);
+--                            expired lots can't be checked out as used.
+-- set_lot_count(lot, qty)  : count correction.
+-- stock_movements.lot_id / lot_number record which lot each change touched.
+

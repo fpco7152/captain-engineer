@@ -22,6 +22,7 @@ import { supabase } from "@/lib/supabase"
 import {
   CATEGORIES,
   type Category,
+  type Lot,
   type Mode,
   type Product,
   type Staff,
@@ -29,12 +30,14 @@ import {
   fmtMoney,
   fmtNum,
   friendlyError,
+  normalizeLot,
   normalizeProduct,
   productStatuses,
 } from "./types"
 import { AdjustRow, EditRow, type FieldPatch, ViewRow } from "./product-row"
 import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, type ProductPrefill, btn } from "./dialogs"
-import { ScannerSheet } from "./scanner"
+import { ScannerSheet, type StockPreset } from "./scanner"
+import type { OutReason } from "./lot-movement"
 
 type Filter = "all" | "attention" | "reorder" | "expiring" | Category
 
@@ -213,6 +216,8 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
   const [adding, setAdding] = useState(false)
   const [prefill, setPrefill] = useState<ProductPrefill | undefined>()
   const [scanning, setScanning] = useState(false)
+  const [stockPreset, setStockPreset] = useState<StockPreset | null>(null)
+  const [lots, setLots] = useState<Lot[]>([])
   const [historyFor, setHistoryFor] = useState<Product | null>(null)
   const [deleting, setDeleting] = useState<Product | null>(null)
   const [pwOpen, setPwOpen] = useState(false)
@@ -241,6 +246,17 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     }
     setLoadError("")
     setProducts((data as Product[]).map(normalizeProduct))
+    const { data: lotRows } = await supabase.from("product_lots").select("*")
+    if (lotRows) setLots((lotRows as Lot[]).map(normalizeLot))
+  }, [])
+
+  const refreshProduct = useCallback(async (id: string) => {
+    const [{ data: row }, { data: lotRows }] = await Promise.all([
+      supabase.from("products").select("*").eq("id", id).maybeSingle(),
+      supabase.from("product_lots").select("*").eq("product_id", id),
+    ])
+    if (row) setProducts((prev) => prev && prev.map((p) => (p.id === id ? normalizeProduct(row as Product) : p)))
+    if (lotRows) setLots((prev) => [...prev.filter((l) => l.product_id !== id), ...(lotRows as Lot[]).map(normalizeLot)])
   }, [])
 
   const loadStaff = useCallback(async () => {
@@ -261,6 +277,13 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
           const row = normalizeProduct(payload.new as Product)
           const exists = prev.some((p) => p.id === row.id)
           return exists ? prev.map((p) => (p.id === row.id ? row : p)) : [...prev, row]
+        })
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "product_lots" }, (payload) => {
+        setLots((prev) => {
+          if (payload.eventType === "DELETE") return prev.filter((l) => l.id !== (payload.old as Lot).id)
+          const row = normalizeLot(payload.new as Lot)
+          return prev.some((l) => l.id === row.id) ? prev.map((l) => (l.id === row.id ? row : l)) : [...prev, row]
         })
       })
       .subscribe((status) => setLive(status === "SUBSCRIBED"))
@@ -322,6 +345,75 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     return task
   }
 
+  const receiveLot = async (productId: string, lot: string, expiry: string, qty: number, note: string) => {
+    const { error } = await supabase.rpc("receive_stock", {
+      p_product_id: productId,
+      p_lot: lot,
+      p_expiry: expiry,
+      p_qty: qty,
+      p_note: note || null,
+    })
+    if (error) {
+      toast.error(friendlyError(error))
+      return false
+    }
+    await refreshProduct(productId)
+    const p = products?.find((x) => x.id === productId)
+    toast.success(`Received ${fmtNum(qty)} ${p ? singular(p.unit, qty) : ""} · Lot ${lot}`, { description: p?.name })
+    return true
+  }
+
+  const takeFromLot = async (lot: Lot, qty: number, reason: OutReason, note: string) => {
+    const { error } = await supabase.rpc("use_stock", { p_lot_id: lot.id, p_qty: qty, p_reason: reason, p_note: note || null })
+    if (error) {
+      toast.error(friendlyError(error))
+      return false
+    }
+    await refreshProduct(lot.product_id)
+    const p = products?.find((x) => x.id === lot.product_id)
+    const verb = reason === "used" ? "Checked out" : reason === "wasted" ? "Wasted" : "Discarded"
+    toast.success(`${verb} ${fmtNum(qty)} ${p ? singular(p.unit, qty) : ""} · Lot ${lot.lot_number}`, { description: p?.name })
+    return true
+  }
+
+  const setLotCount = async (lot: Lot, qty: number) => {
+    const { error } = await supabase.rpc("set_lot_count", { p_lot_id: lot.id, p_qty: qty })
+    if (error) {
+      toast.error(friendlyError(error))
+      throw error
+    }
+    await refreshProduct(lot.product_id)
+  }
+
+  const patchLot = async (lot: Lot, change: Partial<Pick<Lot, "lot_number" | "expiration_date">>) => {
+    const { error } = await supabase.from("product_lots").update(change).eq("id", lot.id)
+    if (error) {
+      toast.error(/duplicate|unique/i.test(error.message) ? "That lot number is already on file for this product." : friendlyError(error))
+      throw error
+    }
+    await refreshProduct(lot.product_id)
+  }
+
+  const removeLot = async (lot: Lot) => {
+    const { error } = await supabase.from("product_lots").delete().eq("id", lot.id)
+    if (error) {
+      toast.error(friendlyError(error))
+      return
+    }
+    await refreshProduct(lot.product_id)
+  }
+
+  const openStock = (productId: string, direction: "in" | "out") => {
+    setStockPreset({ productId, direction })
+    setScanning(true)
+  }
+
+  const lotsByProduct = useMemo(() => {
+    const map = new Map<string, Lot[]>()
+    for (const l of lots) map.set(l.product_id, [...(map.get(l.product_id) ?? []), l])
+    return map
+  }, [lots])
+
   const remove = async (p: Product) => {
     const { error } = await supabase.from("products").delete().eq("id", p.id)
     if (error) {
@@ -340,24 +432,15 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const rows = products.map((p) =>
-      [
-        p.name,
-        categoryLabel(p.category),
-        p.brand,
-        p.quantity,
-        p.unit,
-        p.par_level,
-        p.unit_cost.toFixed(2),
-        (p.quantity * p.unit_cost).toFixed(2),
-        p.lot_number,
-        p.expiration_date,
-        p.supplier,
-        p.notes,
-      ]
+    const line = (p: Product, qty: number, lot: string | null, exp: string | null) =>
+      [p.name, categoryLabel(p.category), p.brand, qty, p.unit, p.par_level, p.unit_cost.toFixed(2), (qty * p.unit_cost).toFixed(2), lot, exp, p.supplier, p.notes]
         .map(esc)
-        .join(","),
-    )
+        .join(",")
+    const rows = products.flatMap((p) => {
+      const productLots = (lotsByProduct.get(p.id) ?? []).filter((l) => l.quantity > 0)
+      if (p.track_lots && productLots.length > 0) return productLots.map((l) => line(p, l.quantity, l.lot_number, l.expiration_date))
+      return [line(p, p.quantity, p.track_lots ? null : p.lot_number, p.track_lots ? null : p.expiration_date)]
+    })
     const blob = new Blob([[cols.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
@@ -519,7 +602,13 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
               )}
             </div>
             <div className="flex gap-2">
-              <button className={`${btn.primary} hidden sm:inline-flex`} onClick={() => setScanning(true)}>
+              <button
+                className={`${btn.primary} hidden sm:inline-flex`}
+                onClick={() => {
+                  setStockPreset(null)
+                  setScanning(true)
+                }}
+              >
                 <ScanBarcode className="h-4 w-4" /> Scan
               </button>
               {mode === "manage" && (
@@ -629,21 +718,29 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
                   <AdjustRow
                     key={p.id}
                     product={p}
+                    lots={lotsByProduct.get(p.id) ?? []}
                     onStep={(d) => adjust(p.id, d, d < 0 ? "used" : "received")}
                     onSet={(v) => patch(p.id, { quantity: v })}
+                    onStock={(d) => openStock(p.id, d)}
+                    onLotCount={setLotCount}
                     onHistory={() => setHistoryFor(p)}
                   />
                 ) : mode === "manage" ? (
                   <EditRow
                     key={p.id}
                     product={p}
+                    lots={lotsByProduct.get(p.id) ?? []}
+                    onStock={(d) => openStock(p.id, d)}
+                    onLotCount={setLotCount}
+                    onLotPatch={patchLot}
+                    onLotRemove={removeLot}
                     onPatch={(c) => patch(p.id, c)}
                     onStep={(d) => adjust(p.id, d, d < 0 ? "used" : "received")}
                     onDelete={() => setDeleting(p)}
                     onHistory={() => setHistoryFor(p)}
                   />
                 ) : (
-                  <ViewRow key={p.id} product={p} onOpen={() => setHistoryFor(p)} />
+                  <ViewRow key={p.id} product={p} lots={lotsByProduct.get(p.id) ?? []} onOpen={() => setHistoryFor(p)} />
                 ),
               )}
             </div>
@@ -653,8 +750,15 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
 
       <ScannerSheet
         open={scanning}
-        onClose={() => setScanning(false)}
+        onClose={() => {
+          setScanning(false)
+          setStockPreset(null)
+        }}
         products={products ?? []}
+        lots={lots}
+        preset={stockPreset}
+        onReceive={receiveLot}
+        onUseLot={takeFromLot}
         mode={mode}
         onSwitchMode={setMode}
         onAdjust={(id, delta, note) => adjust(id, delta, delta < 0 ? "used" : "received", { note })}
@@ -666,7 +770,10 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       />
       <button
         type="button"
-        onClick={() => setScanning(true)}
+        onClick={() => {
+          setStockPreset(null)
+          setScanning(true)
+        }}
         aria-label="Scan a barcode"
         className={`fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-40 flex h-16 w-16 items-center justify-center rounded-full bg-teal-700 text-white shadow-xl shadow-teal-900/30 active:scale-95 sm:hidden ${
           scanning ? "hidden" : ""
@@ -679,9 +786,17 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
         prefill={prefill}
         onClose={() => setAdding(false)}
         defaultCategory={CATEGORIES.find((c) => c.value === filter)?.value ?? "neurotoxin"}
-        onAdded={(p) => setProducts((prev) => (prev && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev))}
+        onAdded={(p) => {
+          setProducts((prev) => (prev && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev))
+          refreshProduct(p.id)
+        }}
       />
-      <HistoryDialog product={historyFor} staffById={staffById} onClose={() => setHistoryFor(null)} />
+      <HistoryDialog
+        product={historyFor}
+        lots={historyFor ? (lotsByProduct.get(historyFor.id) ?? []) : []}
+        staffById={staffById}
+        onClose={() => setHistoryFor(null)}
+      />
       <ConfirmDialog
         open={!!deleting}
         title="Delete product?"

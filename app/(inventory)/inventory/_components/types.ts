@@ -24,6 +24,7 @@ export type Product = {
   expiration_date: string | null
   notes: string | null
   barcode: string | null
+  track_lots: boolean
   created_at: string
   updated_at: string
   updated_by: string | null
@@ -38,9 +39,30 @@ export type Staff = {
   created_at: string
 }
 
+export type Lot = {
+  id: string
+  product_id: string
+  lot_number: string
+  expiration_date: string
+  quantity: number
+  created_at: string
+  updated_at: string
+}
+
+export function normalizeLot(l: Lot): Lot {
+  return { ...l, quantity: Number(l.quantity) }
+}
+
+export function sortLots(lots: Lot[]) {
+  return [...lots].sort((a, b) => a.expiration_date.localeCompare(b.expiration_date) || a.created_at.localeCompare(b.created_at))
+}
+
+export const LOT_CATEGORIES: Category[] = ["neurotoxin", "filler"]
+
 export type Movement = {
   id: number
   product_id: string
+  lot_number: string | null
   change: number
   quantity_after: number
   reason: string
