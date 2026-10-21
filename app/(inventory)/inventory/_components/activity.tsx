@@ -108,7 +108,7 @@ function Initials({ value }: { value: string | null }) {
   return (
     <span
       title="Changed by"
-      className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full bg-slate-900 px-1.5 text-[11px] font-bold tracking-wide text-white"
+      className="inline-flex h-6 max-w-full shrink-0 items-center truncate rounded-full bg-slate-900 px-2 text-[11px] font-semibold text-white"
     >
       {value ?? "?"}
     </span>
@@ -131,12 +131,12 @@ export function ActivityList({
           e.kind === "stock" ? ((e.change ?? 0) > 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700") : "bg-slate-100 text-slate-600"
         return (
           <li key={`${e.kind}-${e.id}`} className="flex items-start gap-3 py-3">
-            <div className="flex w-16 shrink-0 flex-col items-start gap-1">
+            <div className="flex w-[5.5rem] shrink-0 flex-col items-start gap-1">
               <span className="text-xs font-medium tabular-nums text-slate-500">{timeOf(e.created_at)}</span>
               <Initials value={e.actor_initials} />
             </div>
             <div className="min-w-0 flex-1">
-              {showProduct && <p className="truncate font-semibold text-slate-900">{e.product_name ?? "Deleted product"}</p>}
+              {showProduct && <p className="break-words font-semibold text-slate-900">{e.product_name ?? "Deleted product"}</p>}
               <p className={`text-sm ${showProduct ? "text-slate-700" : "font-medium text-slate-900"}`}>{describe(e, unitFor(e.product_id))}</p>
               {(e.lot_number || e.note) && (
                 <p className="text-xs text-slate-500">
@@ -171,7 +171,7 @@ function pad(n: number) {
 }
 
 function downloadCsv(entries: ActivityEntry[], filename: string, unitFor: (id: string | null) => string | undefined) {
-  const cols = ["Date", "Time", "Initials", "Product", "Lot", "Type", "Action", "Change", "On hand after", "Unit", "From", "To", "Note"]
+  const cols = ["Date", "Time", "Changed by", "Product", "Lot", "Type", "Action", "Change", "On hand after", "Unit", "From", "To", "Note"]
   const rows = [...entries]
     .sort((a, b) => a.created_at.localeCompare(b.created_at))
     .map((e) => {

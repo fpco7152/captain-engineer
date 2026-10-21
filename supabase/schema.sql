@@ -329,7 +329,8 @@ insert into public.products (name, category, brand, unit, par_level) values
 
 -- ---------------------------------------------------------------------------
 -- Activity log (migrations activity_log_stamps / activity_change_log).
--- staff.initials            : auto-filled from the name (e.g. "Ali Mohamadi" -> AM);
+-- staff.initials            : name tag, auto-filled as first name + last initial
+--                             (e.g. "Anoosha Mousavi" -> "Anoosha M.");
 --                             change it in the staff table if needed.
 -- stock_movements           : product_name + actor_initials stamped on insert; history
 --                             is kept when a product is deleted (product_id set null).
