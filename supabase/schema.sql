@@ -47,10 +47,12 @@ create table public.products (
   lot_number text check (char_length(lot_number) <= 60),
   expiration_date date,
   notes text check (char_length(notes) <= 1000),
+  barcode text check (char_length(barcode) between 1 and 80),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   updated_by uuid references auth.users(id) on delete set null
 );
+create unique index products_barcode_key on public.products (barcode) where barcode is not null;
 alter table public.products enable row level security;
 
 create policy "staff read products" on public.products
@@ -312,3 +314,31 @@ insert into public.products (name, category, brand, unit, par_level) values
   ('Juvéderm Voluma XC 1mL', 'filler', 'Allergan', 'syringes', 2),
   ('Juvéderm Ultra XC 1mL', 'filler', 'Allergan', 'syringes', 2),
   ('Restylane Lyft 1mL', 'filler', 'Galderma', 'syringes', 2);
+
+-- ---------------------------------------------------------------------------
+-- Lot & expiration tracking (see migrations lot_tracking_tables / lot_tracking_logic
+-- / lots_after_fk_guard in the Supabase project for the full function bodies).
+-- products.track_lots      : when true, stock changes only through lots.
+-- product_lots             : one row per lot with its own expiration and count.
+-- receive_stock(...)       : receive into a lot (lot + expiration required, not expired,
+--                            a known lot must keep its expiration).
+-- use_stock(lot, qty, why) : check out from a lot (used / wasted / expired);
+--                            expired lots can't be checked out as used.
+-- set_lot_count(lot, qty)  : count correction.
+-- stock_movements.lot_id / lot_number record which lot each change touched.
+
+-- ---------------------------------------------------------------------------
+-- Activity log (migrations activity_log_stamps / activity_change_log).
+-- staff.initials            : name tag, auto-filled as first name + last initial
+--                             (e.g. "Anoosha Mousavi" -> "Anoosha M.");
+--                             change it in the staff table if needed.
+-- stock_movements           : product_name + actor_initials stamped on insert; history
+--                             is kept when a product is deleted (product_id set null).
+-- change_log                : detail edits (name, cost, reorder level, barcode, lot fixes,
+--                             products added/deleted) with before/after and initials.
+-- activity (view)           : stock_movements + change_log in one feed for the app.
+-- enable_lot_tracking(product, lot, expiry) / disable_lot_tracking(product)
+--                           : the Manage-mode switch. Turning on moves the current stock
+--                             into the given lot; turning off keeps the count and folds the
+--                             lots into a simple number. Both are logged in change_log.
+

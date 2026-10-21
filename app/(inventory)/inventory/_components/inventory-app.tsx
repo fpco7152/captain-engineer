@@ -9,7 +9,10 @@ import {
   KeyRound,
   LogOut,
   Pencil,
+  ArrowDownUp,
   Plus,
+  ScanBarcode,
+  History,
   Search,
   Syringe,
   Wallet,
@@ -20,6 +23,7 @@ import { supabase } from "@/lib/supabase"
 import {
   CATEGORIES,
   type Category,
+  type Lot,
   type Mode,
   type Product,
   type Staff,
@@ -27,11 +31,15 @@ import {
   fmtMoney,
   fmtNum,
   friendlyError,
+  normalizeLot,
   normalizeProduct,
   productStatuses,
 } from "./types"
-import { EditRow, type FieldPatch, ViewRow } from "./product-row"
-import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, btn } from "./dialogs"
+import { AdjustRow, EditRow, type FieldPatch, ViewRow } from "./product-row"
+import { AddProductDialog, ChangePasswordForm, ConfirmDialog, LotStartDialog, Modal, type ProductPrefill, btn } from "./dialogs"
+import { ActivityDialog, HistoryDialog } from "./activity"
+import { ScannerSheet, type StockPreset } from "./scanner"
+import type { OutReason } from "./lot-movement"
 
 type Filter = "all" | "attention" | "reorder" | "expiring" | Category
 
@@ -47,26 +55,23 @@ function mostCommonUnit(items: Product[]) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "items"
 }
 
+const MODES = [
+  { m: "view", label: "View", Icon: Eye, active: "bg-white text-slate-900 shadow-sm" },
+  { m: "adjust", label: "Adjust", Icon: ArrowDownUp, active: "bg-teal-700 text-white shadow-sm" },
+  { m: "manage", label: "Manage", Icon: Pencil, active: "bg-amber-500 text-white shadow-sm" },
+] as const
+
 function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
   return (
     <div role="group" aria-label="Screen mode" className="inline-flex rounded-xl bg-slate-100 p-1 ring-1 ring-inset ring-slate-200">
-      {(
-        [
-          { m: "view", label: "View", Icon: Eye },
-          { m: "edit", label: "Edit", Icon: Pencil },
-        ] as const
-      ).map(({ m, label, Icon }) => (
+      {MODES.map(({ m, label, Icon, active }) => (
         <button
           key={m}
           type="button"
           aria-pressed={mode === m}
           onClick={() => onChange(m)}
-          className={`inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold transition ${
-            mode === m
-              ? m === "edit"
-                ? "bg-amber-500 text-white shadow-sm"
-                : "bg-white text-slate-900 shadow-sm"
-              : "text-slate-500 hover:text-slate-800"
+          className={`inline-flex h-9 items-center gap-1 rounded-lg px-2 text-xs font-semibold transition sm:gap-1.5 sm:px-3 sm:text-sm ${
+            mode === m ? active : "text-slate-500 hover:text-slate-800"
           }`}
         >
           <Icon className="h-4 w-4" />
@@ -75,6 +80,23 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
       ))}
     </div>
   )
+}
+
+const MODE_BANNER: Record<Exclude<Mode, "view">, { box: string; text: string; hover: string; title: string; body: string }> = {
+  adjust: {
+    box: "border-teal-200 bg-teal-50",
+    text: "text-teal-900",
+    hover: "hover:bg-teal-100",
+    title: "Adjust mode.",
+    body: "Change counts with − / + or Scan. Details are locked.",
+  },
+  manage: {
+    box: "border-amber-200 bg-amber-50",
+    text: "text-amber-900",
+    hover: "hover:bg-amber-100",
+    title: "Manage mode.",
+    body: "Edit anything, add or delete products. Saves automatically.",
+  },
 }
 
 function AccountMenu({
@@ -130,7 +152,7 @@ function AccountMenu({
             <KeyRound className="h-4 w-4" /> Change password
           </button>
           <button className={item} onClick={pick(onExport)}>
-            <Download className="h-4 w-4" /> Download spreadsheet (CSV)
+            <Download className="h-4 w-4" /> Download current stock (CSV)
           </button>
           <button className={`${item} border-t border-slate-100 text-rose-700`} onClick={pick(() => supabase.auth.signOut())}>
             <LogOut className="h-4 w-4" /> Sign out
@@ -188,12 +210,20 @@ function StatCard({
 export function InventoryApp({ me, username }: { me: Staff; username: string }) {
   const [products, setProducts] = useState<Product[] | null>(null)
   const [loadError, setLoadError] = useState("")
-  const [staff, setStaff] = useState<Staff[]>([])
   const [mode, setModeState] = useState<Mode>("view")
   const [filter, setFilter] = useState<Filter>("all")
   const [search, setSearch] = useState("")
   const [live, setLive] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [prefill, setPrefill] = useState<ProductPrefill | undefined>()
+  const [scanning, setScanning] = useState(false)
+  const [stockPreset, setStockPreset] = useState<StockPreset | null>(null)
+  const [lots, setLots] = useState<Lot[]>([])
+  const [activityOpen, setActivityOpen] = useState(false)
+  const [lotStartFor, setLotStartFor] = useState<Product | null>(null)
+  const [lotStopFor, setLotStopFor] = useState<Product | null>(null)
+  const [activityKey, setActivityKey] = useState(0)
+  useEffect(() => setActivityKey((k) => k + 1), [products, lots])
   const [historyFor, setHistoryFor] = useState<Product | null>(null)
   const [deleting, setDeleting] = useState<Product | null>(null)
   const [pwOpen, setPwOpen] = useState(false)
@@ -202,7 +232,8 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
   useEffect(() => {
     try {
       const saved = localStorage.getItem(MODE_KEY)
-      if (saved === "edit" || saved === "view") setModeState(saved)
+      if (saved === "view" || saved === "adjust" || saved === "manage") setModeState(saved)
+      else if (saved === "edit") setModeState("manage")
     } catch {}
   }, [])
 
@@ -221,16 +252,22 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     }
     setLoadError("")
     setProducts((data as Product[]).map(normalizeProduct))
+    const { data: lotRows } = await supabase.from("product_lots").select("*")
+    if (lotRows) setLots((lotRows as Lot[]).map(normalizeLot))
   }, [])
 
-  const loadStaff = useCallback(async () => {
-    const { data } = await supabase.from("staff").select("*").order("display_name")
-    if (data) setStaff(data as Staff[])
+  const refreshProduct = useCallback(async (id: string) => {
+    const [{ data: row }, { data: lotRows }] = await Promise.all([
+      supabase.from("products").select("*").eq("id", id).maybeSingle(),
+      supabase.from("product_lots").select("*").eq("product_id", id),
+    ])
+    if (row) setProducts((prev) => prev && prev.map((p) => (p.id === id ? normalizeProduct(row as Product) : p)))
+    if (lotRows) setLots((prev) => [...prev.filter((l) => l.product_id !== id), ...(lotRows as Lot[]).map(normalizeLot)])
   }, [])
+
 
   useEffect(() => {
     loadProducts()
-    loadStaff()
 
     const channel = supabase
       .channel("inventory-products")
@@ -243,6 +280,13 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
           return exists ? prev.map((p) => (p.id === row.id ? row : p)) : [...prev, row]
         })
       })
+      .on("postgres_changes", { event: "*", schema: "public", table: "product_lots" }, (payload) => {
+        setLots((prev) => {
+          if (payload.eventType === "DELETE") return prev.filter((l) => l.id !== (payload.old as Lot).id)
+          const row = normalizeLot(payload.new as Lot)
+          return prev.some((l) => l.id === row.id) ? prev.map((l) => (l.id === row.id ? row : l)) : [...prev, row]
+        })
+      })
       .subscribe((status) => setLive(status === "SUBSCRIBED"))
 
     const refresh = () => document.visibilityState === "visible" && loadProducts()
@@ -253,9 +297,8 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       document.removeEventListener("visibilitychange", refresh)
       window.removeEventListener("online", refresh)
     }
-  }, [loadProducts, loadStaff])
+  }, [loadProducts])
 
-  const staffById = useMemo(() => new Map(staff.map((s) => [s.user_id, s])), [staff])
 
   const replace = (row: Product) => setProducts((prev) => prev && prev.map((p) => (p.id === row.id ? row : p)))
 
@@ -272,29 +315,123 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     replace(normalizeProduct(data as Product))
   }
 
-  const adjust = (id: string, delta: number, reason: string, quiet = false) => {
+  const adjust = (id: string, delta: number, reason: string, opts: { quiet?: boolean; note?: string } = {}): Promise<boolean> => {
     setProducts((prev) => prev && prev.map((p) => (p.id === id ? { ...p, quantity: Math.max(0, p.quantity + delta) } : p)))
-    const prevTask = queues.current.get(id) ?? Promise.resolve()
+    const prevTask = queues.current.get(id) ?? Promise.resolve(true)
     const task = prevTask.then(async () => {
-      const { data, error } = await supabase.rpc("adjust_stock", { p_product_id: id, p_change: delta, p_reason: reason })
+      const { data, error } = await supabase.rpc("adjust_stock", {
+        p_product_id: id,
+        p_change: delta,
+        p_reason: reason,
+        p_note: opts.note ?? null,
+      })
       if (error) {
         toast.error(friendlyError(error))
         await loadProducts()
-        return
+        return false
       }
       replace(normalizeProduct(data as Product))
+      return true
     })
     queues.current.set(id, task)
 
-    if (quiet) return
     const p = products?.find((x) => x.id === id)
-    if (!p) return
+    if (opts.quiet || !p) return task
     const verb = delta < 0 ? "Used" : "Received"
     toast(`${verb} ${fmtNum(Math.abs(delta))} ${singular(p.unit, delta)}`, {
       description: p.name,
-      action: { label: "Undo", onClick: () => adjust(id, -delta, "count correction", true) },
+      action: { label: "Undo", onClick: () => adjust(id, -delta, "count correction", { quiet: true }) },
     })
+    return task
   }
+
+  const receiveLot = async (productId: string, lot: string, expiry: string, qty: number, note: string) => {
+    const { error } = await supabase.rpc("receive_stock", {
+      p_product_id: productId,
+      p_lot: lot,
+      p_expiry: expiry,
+      p_qty: qty,
+      p_note: note || null,
+    })
+    if (error) {
+      toast.error(friendlyError(error))
+      return false
+    }
+    await refreshProduct(productId)
+    const p = products?.find((x) => x.id === productId)
+    toast.success(`Received ${fmtNum(qty)} ${p ? singular(p.unit, qty) : ""} · Lot ${lot}`, { description: p?.name })
+    return true
+  }
+
+  const takeFromLot = async (lot: Lot, qty: number, reason: OutReason, note: string) => {
+    const { error } = await supabase.rpc("use_stock", { p_lot_id: lot.id, p_qty: qty, p_reason: reason, p_note: note || null })
+    if (error) {
+      toast.error(friendlyError(error))
+      return false
+    }
+    await refreshProduct(lot.product_id)
+    const p = products?.find((x) => x.id === lot.product_id)
+    const verb = reason === "used" ? "Checked out" : reason === "wasted" ? "Wasted" : "Discarded"
+    toast.success(`${verb} ${fmtNum(qty)} ${p ? singular(p.unit, qty) : ""} · Lot ${lot.lot_number}`, { description: p?.name })
+    return true
+  }
+
+  const setLotCount = async (lot: Lot, qty: number) => {
+    const { error } = await supabase.rpc("set_lot_count", { p_lot_id: lot.id, p_qty: qty })
+    if (error) {
+      toast.error(friendlyError(error))
+      throw error
+    }
+    await refreshProduct(lot.product_id)
+  }
+
+  const patchLot = async (lot: Lot, change: Partial<Pick<Lot, "lot_number" | "expiration_date">>) => {
+    const { error } = await supabase.from("product_lots").update(change).eq("id", lot.id)
+    if (error) {
+      toast.error(/duplicate|unique/i.test(error.message) ? "That lot number is already on file for this product." : friendlyError(error))
+      throw error
+    }
+    await refreshProduct(lot.product_id)
+  }
+
+  const removeLot = async (lot: Lot) => {
+    const { error } = await supabase.from("product_lots").delete().eq("id", lot.id)
+    if (error) {
+      toast.error(friendlyError(error))
+      return
+    }
+    await refreshProduct(lot.product_id)
+  }
+
+  const setLotTracking = async (p: Product, on: boolean, lot?: string, expiry?: string) => {
+    const { error } = on
+      ? await supabase.rpc("enable_lot_tracking", { p_product_id: p.id, p_lot: lot ?? null, p_expiry: expiry ?? null })
+      : await supabase.rpc("disable_lot_tracking", { p_product_id: p.id })
+    if (error) {
+      toast.error(friendlyError(error))
+      return false
+    }
+    await refreshProduct(p.id)
+    toast.success(`Lot confirmation ${on ? "on" : "off"} for ${p.name}`)
+    return true
+  }
+
+  const toggleLotTracking = (p: Product, on: boolean) => {
+    if (!on) return setLotStopFor(p)
+    if (p.quantity > 0) return setLotStartFor(p)
+    setLotTracking(p, true)
+  }
+
+  const openStock = (productId: string, direction: "in" | "out") => {
+    setStockPreset({ productId, direction })
+    setScanning(true)
+  }
+
+  const lotsByProduct = useMemo(() => {
+    const map = new Map<string, Lot[]>()
+    for (const l of lots) map.set(l.product_id, [...(map.get(l.product_id) ?? []), l])
+    return map
+  }, [lots])
 
   const remove = async (p: Product) => {
     const { error } = await supabase.from("products").delete().eq("id", p.id)
@@ -314,24 +451,15 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const rows = products.map((p) =>
-      [
-        p.name,
-        categoryLabel(p.category),
-        p.brand,
-        p.quantity,
-        p.unit,
-        p.par_level,
-        p.unit_cost.toFixed(2),
-        (p.quantity * p.unit_cost).toFixed(2),
-        p.lot_number,
-        p.expiration_date,
-        p.supplier,
-        p.notes,
-      ]
+    const line = (p: Product, qty: number, lot: string | null, exp: string | null) =>
+      [p.name, categoryLabel(p.category), p.brand, qty, p.unit, p.par_level, p.unit_cost.toFixed(2), (qty * p.unit_cost).toFixed(2), lot, exp, p.supplier, p.notes]
         .map(esc)
-        .join(","),
-    )
+        .join(",")
+    const rows = products.flatMap((p) => {
+      const productLots = (lotsByProduct.get(p.id) ?? []).filter((l) => l.quantity > 0)
+      if (p.track_lots && productLots.length > 0) return productLots.map((l) => line(p, l.quantity, l.lot_number, l.expiration_date))
+      return [line(p, p.quantity, p.track_lots ? null : p.lot_number, p.track_lots ? null : p.expiration_date)]
+    })
     const blob = new Blob([[cols.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" })
     const a = document.createElement("a")
     a.href = URL.createObjectURL(blob)
@@ -364,7 +492,7 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       if (filter === "expiring" && !st.some((k) => k === "expired" || k === "expiring")) return false
       if (CATEGORIES.some((c) => c.value === filter) && p.category !== filter) return false
       if (!q) return true
-      return [p.name, p.brand, p.lot_number, p.supplier].some((v) => v?.toLowerCase().includes(q))
+      return [p.name, p.brand, p.lot_number, p.supplier, p.barcode].some((v) => v?.toLowerCase().includes(q))
     })
   }, [products, filter, search])
 
@@ -387,14 +515,20 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     }`
 
   return (
-    <div className="min-h-dvh bg-slate-50 pb-16 text-slate-900">
-      <header className={`sticky top-0 z-30 border-b bg-white/95 backdrop-blur ${mode === "edit" ? "border-amber-300" : "border-slate-200"}`}>
+    <div className="min-h-dvh bg-slate-50 pb-28 text-slate-900 sm:pb-16">
+      <header className={`sticky top-0 z-30 border-b bg-white/95 backdrop-blur ${
+          mode === "manage" ? "border-amber-300" : mode === "adjust" ? "border-teal-300" : "border-slate-200"
+        }`}>
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white">
+            <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white">
               <Syringe className="h-5 w-5" />
+              <span
+                className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-white sm:hidden ${live ? "bg-emerald-500" : "bg-slate-300"}`}
+                aria-label={live ? "Live" : "Connecting"}
+              />
             </div>
-            <div className="min-w-0">
+            <div className="hidden min-w-0 sm:block">
               <h1 className="truncate text-base font-bold leading-tight sm:text-lg">Inventory</h1>
               <p className="flex items-center gap-1.5 text-xs text-slate-500">
                 <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-500" : "bg-slate-300"}`} />
@@ -407,13 +541,13 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
             <AccountMenu me={me} username={username} onPassword={() => setPwOpen(true)} onExport={exportCsv} />
           </div>
         </div>
-        {mode === "edit" && (
-          <div className="border-t border-amber-200 bg-amber-50">
-            <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-sm text-amber-900">
+        {mode !== "view" && (
+          <div className={`border-t ${MODE_BANNER[mode].box}`}>
+            <div className={`mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-2 text-sm ${MODE_BANNER[mode].text}`}>
               <span>
-                <strong>Edit mode.</strong> Tap any number to change it. Changes save automatically.
+                <strong>{MODE_BANNER[mode].title}</strong> {MODE_BANNER[mode].body}
               </span>
-              <button onClick={() => setMode("view")} className="shrink-0 rounded-md px-2 py-1 font-semibold hover:bg-amber-100">
+              <button onClick={() => setMode("view")} className={`shrink-0 rounded-md px-2 py-1 font-semibold ${MODE_BANNER[mode].hover}`}>
                 Done
               </button>
             </div>
@@ -486,14 +620,31 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
                 </button>
               )}
             </div>
-            {mode === "edit" && (
-              <button
-                className={btn.primary}
-                onClick={() => setAdding(true)}
-              >
-                <Plus className="h-4 w-4" /> Add product
+            <div className="flex gap-2">
+              <button className={`${btn.secondary} flex-1 sm:flex-none`} onClick={() => setActivityOpen(true)}>
+                <History className="h-4 w-4" /> Today&apos;s activity
               </button>
-            )}
+              <button
+                className={`${btn.primary} hidden sm:inline-flex`}
+                onClick={() => {
+                  setStockPreset(null)
+                  setScanning(true)
+                }}
+              >
+                <ScanBarcode className="h-4 w-4" /> Scan
+              </button>
+              {mode === "manage" && (
+                <button
+                  className={`${btn.secondary} flex-1 sm:flex-none`}
+                  onClick={() => {
+                    setPrefill(undefined)
+                    setAdding(true)
+                  }}
+                >
+                  <Plus className="h-4 w-4" /> Add product
+                </button>
+              )}
+            </div>
           </div>
           <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
             <button className={chip(filter === "all")} onClick={() => setFilter("all")}>
@@ -536,10 +687,16 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
           <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
             <p className="font-semibold text-slate-900">No products yet</p>
             <p className="mt-1 text-sm text-slate-500">
-              {mode === "edit" ? "Add your first product to start tracking." : "Switch to Edit (top right) to add products."}
+              {mode === "manage" ? "Add your first product to start tracking." : "Switch to Manage (top right) to add products."}
             </p>
-            {mode === "edit" && (
-              <button className={`${btn.primary} mt-4`} onClick={() => setAdding(true)}>
+            {mode === "manage" && (
+              <button
+                className={`${btn.primary} mt-4`}
+                onClick={() => {
+                  setPrefill(undefined)
+                  setAdding(true)
+                }}
+              >
                 <Plus className="h-4 w-4" /> Add product
               </button>
             )}
@@ -571,21 +728,42 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
             </h2>
             <div
               className={`divide-y overflow-hidden rounded-2xl border bg-white shadow-sm ${
-                mode === "edit" ? "divide-slate-200 border-amber-200" : "divide-slate-100 border-slate-200"
+                mode === "manage"
+                  ? "divide-slate-200 border-amber-200"
+                  : mode === "adjust"
+                    ? "divide-slate-100 border-teal-200"
+                    : "divide-slate-100 border-slate-200"
               }`}
             >
               {g.items.map((p) =>
-                mode === "edit" ? (
+                mode === "adjust" ? (
+                  <AdjustRow
+                    key={p.id}
+                    product={p}
+                    lots={lotsByProduct.get(p.id) ?? []}
+                    onStep={(d) => adjust(p.id, d, d < 0 ? "used" : "received")}
+                    onSet={(v) => patch(p.id, { quantity: v })}
+                    onStock={(d) => openStock(p.id, d)}
+                    onLotCount={setLotCount}
+                    onHistory={() => setHistoryFor(p)}
+                  />
+                ) : mode === "manage" ? (
                   <EditRow
                     key={p.id}
                     product={p}
+                    lots={lotsByProduct.get(p.id) ?? []}
+                    onStock={(d) => openStock(p.id, d)}
+                    onLotCount={setLotCount}
+                    onLotPatch={patchLot}
+                    onLotRemove={removeLot}
+                    onLotTracking={(on) => toggleLotTracking(p, on)}
                     onPatch={(c) => patch(p.id, c)}
                     onStep={(d) => adjust(p.id, d, d < 0 ? "used" : "received")}
                     onDelete={() => setDeleting(p)}
                     onHistory={() => setHistoryFor(p)}
                   />
                 ) : (
-                  <ViewRow key={p.id} product={p} onOpen={() => setHistoryFor(p)} />
+                  <ViewRow key={p.id} product={p} lots={lotsByProduct.get(p.id) ?? []} onOpen={() => setHistoryFor(p)} />
                 ),
               )}
             </div>
@@ -593,13 +771,72 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
         ))}
       </main>
 
+      <ScannerSheet
+        open={scanning}
+        onClose={() => {
+          setScanning(false)
+          setStockPreset(null)
+        }}
+        products={products ?? []}
+        lots={lots}
+        preset={stockPreset}
+        onReceive={receiveLot}
+        onUseLot={takeFromLot}
+        mode={mode}
+        onSwitchMode={setMode}
+        onAdjust={(id, delta, note) => adjust(id, delta, delta < 0 ? "used" : "received", { note })}
+        onPatch={patch}
+        onCreate={(pf) => {
+          setPrefill(pf)
+          setAdding(true)
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => {
+          setStockPreset(null)
+          setScanning(true)
+        }}
+        aria-label="Scan a barcode"
+        className={`fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-40 flex h-16 w-16 items-center justify-center rounded-full bg-teal-700 text-white shadow-xl shadow-teal-900/30 active:scale-95 sm:hidden ${
+          scanning ? "hidden" : ""
+        }`}
+      >
+        <ScanBarcode className="h-7 w-7" />
+      </button>
       <AddProductDialog
         open={adding}
+        prefill={prefill}
+        products={products ?? []}
         onClose={() => setAdding(false)}
         defaultCategory={CATEGORIES.find((c) => c.value === filter)?.value ?? "neurotoxin"}
-        onAdded={(p) => setProducts((prev) => (prev && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev))}
+        onAdded={(p) => {
+          setProducts((prev) => (prev && !prev.some((x) => x.id === p.id) ? [...prev, p] : prev))
+          refreshProduct(p.id)
+        }}
       />
-      <HistoryDialog product={historyFor} staffById={staffById} onClose={() => setHistoryFor(null)} />
+      <HistoryDialog
+        product={historyFor}
+        lots={historyFor ? (lotsByProduct.get(historyFor.id) ?? []) : []}
+        refreshKey={activityKey}
+        onClose={() => setHistoryFor(null)}
+      />
+      <LotStartDialog
+        product={lotStartFor}
+        onClose={() => setLotStartFor(null)}
+        onConfirm={(lot, expiry) => setLotTracking(lotStartFor!, true, lot, expiry)}
+      />
+      <ConfirmDialog
+        open={!!lotStopFor}
+        title="Turn off lot confirmation?"
+        message={`${lotStopFor?.name} will go back to simple − / + counting. The ${lotStopFor ? fmtNum(lotStopFor.quantity) : ""} ${lotStopFor?.unit ?? ""} on hand stay as they are, and past lot records stay in the history.`}
+        confirmLabel="Turn off"
+        onClose={() => setLotStopFor(null)}
+        onConfirm={async () => {
+          await setLotTracking(lotStopFor!, false)
+        }}
+      />
+      <ActivityDialog open={activityOpen} onClose={() => setActivityOpen(false)} products={products ?? []} refreshKey={activityKey} />
       <ConfirmDialog
         open={!!deleting}
         title="Delete product?"

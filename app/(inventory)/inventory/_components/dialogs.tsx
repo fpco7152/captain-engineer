@@ -4,17 +4,9 @@ import { useEffect, useState } from "react"
 import { Eye, EyeOff, Loader2, X } from "lucide-react"
 import { toast } from "sonner"
 import { supabase } from "@/lib/supabase"
-import {
-  CATEGORIES,
-  type Category,
-  type Movement,
-  type Product,
-  type Staff,
-  fmtNum,
-  friendlyError,
-  normalizeProduct,
-} from "./types"
+import { CATEGORIES, LOT_CATEGORIES, type Category, type Product, friendlyError, normalizeProduct } from "./types"
 import { FieldLabel } from "./fields"
+import { ScanButton, ScanCodeDialog } from "./camera"
 
 export function Modal({
   open,
@@ -139,16 +131,22 @@ const DEFAULT_UNIT: Record<Category, string> = {
   other: "units",
 }
 
+export type ProductPrefill = { barcode?: string; lot_number?: string; expiration_date?: string }
+
 export function AddProductDialog({
   open,
   onClose,
   onAdded,
   defaultCategory,
+  prefill,
+  products = [],
 }: {
   open: boolean
   onClose: () => void
   onAdded: (p: Product) => void
   defaultCategory: Category
+  prefill?: ProductPrefill
+  products?: Product[]
 }) {
   const blank = () => ({
     name: "",
@@ -158,13 +156,16 @@ export function AddProductDialog({
     quantity: "",
     par_level: "",
     unit_cost: "",
-    lot_number: "",
-    expiration_date: "",
+    lot_number: prefill?.lot_number ?? "",
+    expiration_date: prefill?.expiration_date ?? "",
     supplier: "",
+    barcode: prefill?.barcode ?? "",
+    track_lots: LOT_CATEGORIES.includes(defaultCategory),
   })
   const [f, setF] = useState(blank)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const [scanning, setScanning] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -183,6 +184,9 @@ export function AddProductDialog({
     if (!f.name.trim()) return setError("Give the product a name.")
     if (Object.values(values).some((v) => !Number.isFinite(v) || v < 0 || v >= 1_000_000))
       return setError("Quantities and cost must be numbers zero or more.")
+    const startingLot = f.track_lots && values.quantity > 0
+    if (startingLot && (!f.lot_number.trim() || !f.expiration_date))
+      return setError("Enter the lot number and expiration for the starting count, or leave On hand at 0 and receive it later.")
     setBusy(true)
     const { data, error: err } = await supabase
       .from("products")
@@ -191,15 +195,31 @@ export function AddProductDialog({
         category: f.category,
         brand: f.brand.trim() || null,
         unit: f.unit.trim() || DEFAULT_UNIT[f.category],
-        lot_number: f.lot_number.trim() || null,
-        expiration_date: f.expiration_date || null,
+        lot_number: f.track_lots ? null : f.lot_number.trim() || null,
+        expiration_date: f.track_lots ? null : f.expiration_date || null,
         supplier: f.supplier.trim() || null,
+        barcode: f.barcode.trim() || null,
+        track_lots: f.track_lots,
         ...values,
+        quantity: f.track_lots ? 0 : values.quantity,
       })
       .select()
       .single()
+    if (err) {
+      setBusy(false)
+      return setError(friendlyError(err))
+    }
+    if (startingLot) {
+      const { error: lotErr } = await supabase.rpc("receive_stock", {
+        p_product_id: data.id,
+        p_lot: f.lot_number,
+        p_expiry: f.expiration_date,
+        p_qty: values.quantity,
+        p_note: "Starting count",
+      })
+      if (lotErr) toast.error(`Product added, but the starting count wasn't saved: ${friendlyError(lotErr)}`)
+    }
     setBusy(false)
-    if (err) return setError(friendlyError(err))
     onAdded(normalizeProduct(data as Product))
     toast.success(`Added ${data.name}`)
     onClose()
@@ -209,6 +229,7 @@ export function AddProductDialog({
     setF((prev) => ({ ...prev, [k]: e.target.value }))
 
   return (
+    <>
     <Modal
       open={open}
       onClose={onClose}
@@ -238,7 +259,7 @@ export function AddProductDialog({
             value={f.category}
             onChange={(e) => {
               const c = e.target.value as Category
-              setF((prev) => ({ ...prev, category: c, unit: DEFAULT_UNIT[c] }))
+              setF((prev) => ({ ...prev, category: c, unit: DEFAULT_UNIT[c], track_lots: LOT_CATEGORIES.includes(c) }))
             }}
           >
             {CATEGORIES.map((c) => (
@@ -270,11 +291,44 @@ export function AddProductDialog({
         </div>
         <div>
           <FieldLabel htmlFor="np-lot">Lot #</FieldLabel>
-          <input id="np-lot" className={input} value={f.lot_number} onChange={set("lot_number")} placeholder="Optional" maxLength={60} />
+          <input id="np-lot" className={input} value={f.lot_number} onChange={set("lot_number")} placeholder={f.track_lots ? "Needed for a starting count" : "Optional"} maxLength={60} />
         </div>
         <div>
           <FieldLabel htmlFor="np-exp">Expires</FieldLabel>
           <input id="np-exp" type="date" className={input} value={f.expiration_date} onChange={set("expiration_date")} />
+        </div>
+        <label className="col-span-2 flex items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5 text-sm">
+          <input
+            type="checkbox"
+            checked={f.track_lots}
+            onChange={(e) => setF((prev) => ({ ...prev, track_lots: e.target.checked }))}
+            className="mt-0.5 h-5 w-5 accent-teal-700"
+          />
+          <span>
+            <span className="font-medium text-slate-900">Lot &amp; expiration confirmation</span>
+            <span className="block text-slate-500">Recommended for toxins and fillers. A starting count needs its lot and expiration.</span>
+          </span>
+        </label>
+        <div className="col-span-2">
+          <FieldLabel htmlFor="np-barcode">Barcode</FieldLabel>
+          <div className="flex gap-2">
+            <input
+              id="np-barcode"
+              className={`${input} font-mono`}
+              value={f.barcode}
+              onChange={set("barcode")}
+              placeholder="Scan or type"
+              maxLength={80}
+              autoComplete="off"
+            />
+            <ScanButton onClick={() => setScanning(true)} />
+          </div>
+          {(() => {
+            const owner = f.barcode.trim() && products.find((p) => p.barcode === f.barcode.trim())
+            return owner ? (
+              <p className="mt-1.5 text-sm text-rose-700">This barcode already belongs to {owner.name}. Scan a different box or clear it.</p>
+            ) : null
+          })()}
         </div>
         <div className="col-span-2">
           <FieldLabel htmlFor="np-sup">Supplier</FieldLabel>
@@ -284,85 +338,20 @@ export function AddProductDialog({
         <button type="submit" className="hidden" />
       </form>
     </Modal>
-  )
-}
-
-const REASON_LABEL: Record<string, string> = {
-  edit: "Count updated",
-  "starting count": "Starting count",
-  used: "Used",
-  received: "Received",
-  wasted: "Wasted",
-  expired: "Expired",
-  returned: "Returned",
-  "count correction": "Count correction",
-}
-
-export function HistoryDialog({
-  product,
-  staffById,
-  onClose,
-}: {
-  product: Product | null
-  staffById: Map<string, Staff>
-  onClose: () => void
-}) {
-  const [rows, setRows] = useState<Movement[] | null>(null)
-  const [error, setError] = useState("")
-
-  useEffect(() => {
-    if (!product) return
-    setRows(null)
-    setError("")
-    supabase
-      .from("stock_movements")
-      .select("*")
-      .eq("product_id", product.id)
-      .order("created_at", { ascending: false })
-      .limit(100)
-      .then(({ data, error: err }) => {
-        if (err) setError(friendlyError(err))
-        else setRows((data as Movement[]).map((m) => ({ ...m, change: Number(m.change), quantity_after: Number(m.quantity_after) })))
-      })
-  }, [product])
-
-  return (
-    <Modal open={!!product} onClose={onClose} title={product ? `History · ${product.name}` : "History"}>
-      {error && <p className="text-sm text-rose-700">{error}</p>}
-      {!rows && !error && (
-        <div className="flex justify-center py-10">
-          <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-        </div>
-      )}
-      {rows && rows.length === 0 && <p className="py-8 text-center text-slate-500">No stock changes recorded yet.</p>}
-      {rows && rows.length > 0 && (
-        <ol className="divide-y divide-slate-100">
-          {rows.map((m) => (
-            <li key={m.id} className="flex items-start justify-between gap-3 py-3">
-              <div className="min-w-0">
-                <p className="font-medium text-slate-900">
-                  {REASON_LABEL[m.reason] ?? m.reason}
-                  <span className="font-normal text-slate-500"> · now {fmtNum(m.quantity_after)} {product?.unit}</span>
-                </p>
-                <p className="text-sm text-slate-500">
-                  {new Date(m.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
-                  {m.created_by && staffById.get(m.created_by) ? ` · ${staffById.get(m.created_by)!.display_name}` : ""}
-                </p>
-                {m.note && <p className="mt-1 text-sm text-slate-600">“{m.note}”</p>}
-              </div>
-              <span
-                className={`shrink-0 rounded-full px-2.5 py-1 text-sm font-semibold tabular-nums ${
-                  m.change > 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
-                }`}
-              >
-                {m.change > 0 ? "+" : ""}
-                {fmtNum(m.change)}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </Modal>
+    <ScanCodeDialog
+      open={scanning}
+      title="Scan the product's barcode"
+      onClose={() => setScanning(false)}
+      onResult={(info) =>
+        setF((prev) => ({
+          ...prev,
+          barcode: info.key,
+          lot_number: prev.lot_number || info.lot || "",
+          expiration_date: prev.expiration_date || info.expiry || "",
+        }))
+      }
+    />
+    </>
   )
 }
 
@@ -444,5 +433,74 @@ export function ChangePasswordForm({ onDone, submitLabel = "Save new password" }
         {submitLabel}
       </button>
     </form>
+  )
+}
+
+export function LotStartDialog({
+  product,
+  onClose,
+  onConfirm,
+}: {
+  product: Product | null
+  onClose: () => void
+  onConfirm: (lot: string, expiry: string) => Promise<boolean>
+}) {
+  const [lot, setLot] = useState("")
+  const [exp, setExp] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  useEffect(() => {
+    if (product) {
+      setLot(product.lot_number ?? "")
+      setExp(product.expiration_date ?? "")
+      setError("")
+    }
+  }, [product])
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!lot.trim() || !exp) return setError("Enter the lot number and expiration printed on the boxes you have.")
+    setBusy(true)
+    const ok = await onConfirm(lot.trim(), exp)
+    setBusy(false)
+    if (ok) onClose()
+  }
+  return (
+    <Modal
+      open={!!product}
+      onClose={onClose}
+      title="Turn on lot confirmation"
+      footer={
+        <>
+          <button className={btn.secondary} onClick={onClose} type="button">
+            Cancel
+          </button>
+          <button className={btn.primary} form="lot-start" type="submit" disabled={busy}>
+            {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+            Turn on
+          </button>
+        </>
+      }
+    >
+      {product && (
+        <form id="lot-start" onSubmit={submit} className="space-y-4">
+          <p className="text-sm text-slate-600">
+            You have <strong>{product.quantity} {product.unit}</strong> of {product.name} on hand. Which lot are they from? If they come from more
+            than one lot, enter the main one now and correct the lot counts afterwards.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <FieldLabel htmlFor="ls-lot">Lot number</FieldLabel>
+              <input id="ls-lot" className={`${input} font-mono uppercase`} value={lot} onChange={(e) => setLot(e.target.value)} maxLength={60} autoComplete="off" />
+            </div>
+            <div>
+              <FieldLabel htmlFor="ls-exp">Expires</FieldLabel>
+              <input id="ls-exp" type="date" className={input} value={exp} onChange={(e) => setExp(e.target.value)} />
+            </div>
+          </div>
+          {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+          <button type="submit" className="hidden" />
+        </form>
+      )}
+    </Modal>
   )
 }
