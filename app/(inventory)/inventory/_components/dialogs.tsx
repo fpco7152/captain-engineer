@@ -305,7 +305,7 @@ export function AddProductDialog({
             className="mt-0.5 h-5 w-5 accent-teal-700"
           />
           <span>
-            <span className="font-medium text-slate-900">Track by lot &amp; expiration</span>
+            <span className="font-medium text-slate-900">Lot &amp; expiration confirmation</span>
             <span className="block text-slate-500">Recommended for toxins and fillers. A starting count needs its lot and expiration.</span>
           </span>
         </label>
@@ -433,5 +433,74 @@ export function ChangePasswordForm({ onDone, submitLabel = "Save new password" }
         {submitLabel}
       </button>
     </form>
+  )
+}
+
+export function LotStartDialog({
+  product,
+  onClose,
+  onConfirm,
+}: {
+  product: Product | null
+  onClose: () => void
+  onConfirm: (lot: string, expiry: string) => Promise<boolean>
+}) {
+  const [lot, setLot] = useState("")
+  const [exp, setExp] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  useEffect(() => {
+    if (product) {
+      setLot(product.lot_number ?? "")
+      setExp(product.expiration_date ?? "")
+      setError("")
+    }
+  }, [product])
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!lot.trim() || !exp) return setError("Enter the lot number and expiration printed on the boxes you have.")
+    setBusy(true)
+    const ok = await onConfirm(lot.trim(), exp)
+    setBusy(false)
+    if (ok) onClose()
+  }
+  return (
+    <Modal
+      open={!!product}
+      onClose={onClose}
+      title="Turn on lot confirmation"
+      footer={
+        <>
+          <button className={btn.secondary} onClick={onClose} type="button">
+            Cancel
+          </button>
+          <button className={btn.primary} form="lot-start" type="submit" disabled={busy}>
+            {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+            Turn on
+          </button>
+        </>
+      }
+    >
+      {product && (
+        <form id="lot-start" onSubmit={submit} className="space-y-4">
+          <p className="text-sm text-slate-600">
+            You have <strong>{product.quantity} {product.unit}</strong> of {product.name} on hand. Which lot are they from? If they come from more
+            than one lot, enter the main one now and correct the lot counts afterwards.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <FieldLabel htmlFor="ls-lot">Lot number</FieldLabel>
+              <input id="ls-lot" className={`${input} font-mono uppercase`} value={lot} onChange={(e) => setLot(e.target.value)} maxLength={60} autoComplete="off" />
+            </div>
+            <div>
+              <FieldLabel htmlFor="ls-exp">Expires</FieldLabel>
+              <input id="ls-exp" type="date" className={input} value={exp} onChange={(e) => setExp(e.target.value)} />
+            </div>
+          </div>
+          {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+          <button type="submit" className="hidden" />
+        </form>
+      )}
+    </Modal>
   )
 }

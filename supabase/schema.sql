@@ -337,4 +337,8 @@ insert into public.products (name, category, brand, unit, par_level) values
 -- change_log                : detail edits (name, cost, reorder level, barcode, lot fixes,
 --                             products added/deleted) with before/after and initials.
 -- activity (view)           : stock_movements + change_log in one feed for the app.
+-- enable_lot_tracking(product, lot, expiry) / disable_lot_tracking(product)
+--                           : the Manage-mode switch. Turning on moves the current stock
+--                             into the given lot; turning off keeps the count and folds the
+--                             lots into a simple number. Both are logged in change_log.
 

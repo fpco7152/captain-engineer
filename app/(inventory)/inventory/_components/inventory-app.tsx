@@ -36,7 +36,7 @@ import {
   productStatuses,
 } from "./types"
 import { AdjustRow, EditRow, type FieldPatch, ViewRow } from "./product-row"
-import { AddProductDialog, ChangePasswordForm, ConfirmDialog, Modal, type ProductPrefill, btn } from "./dialogs"
+import { AddProductDialog, ChangePasswordForm, ConfirmDialog, LotStartDialog, Modal, type ProductPrefill, btn } from "./dialogs"
 import { ActivityDialog, HistoryDialog } from "./activity"
 import { ScannerSheet, type StockPreset } from "./scanner"
 import type { OutReason } from "./lot-movement"
@@ -220,6 +220,8 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
   const [stockPreset, setStockPreset] = useState<StockPreset | null>(null)
   const [lots, setLots] = useState<Lot[]>([])
   const [activityOpen, setActivityOpen] = useState(false)
+  const [lotStartFor, setLotStartFor] = useState<Product | null>(null)
+  const [lotStopFor, setLotStopFor] = useState<Product | null>(null)
   const [activityKey, setActivityKey] = useState(0)
   useEffect(() => setActivityKey((k) => k + 1), [products, lots])
   const [historyFor, setHistoryFor] = useState<Product | null>(null)
@@ -399,6 +401,25 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       return
     }
     await refreshProduct(lot.product_id)
+  }
+
+  const setLotTracking = async (p: Product, on: boolean, lot?: string, expiry?: string) => {
+    const { error } = on
+      ? await supabase.rpc("enable_lot_tracking", { p_product_id: p.id, p_lot: lot ?? null, p_expiry: expiry ?? null })
+      : await supabase.rpc("disable_lot_tracking", { p_product_id: p.id })
+    if (error) {
+      toast.error(friendlyError(error))
+      return false
+    }
+    await refreshProduct(p.id)
+    toast.success(`Lot confirmation ${on ? "on" : "off"} for ${p.name}`)
+    return true
+  }
+
+  const toggleLotTracking = (p: Product, on: boolean) => {
+    if (!on) return setLotStopFor(p)
+    if (p.quantity > 0) return setLotStartFor(p)
+    setLotTracking(p, true)
   }
 
   const openStock = (productId: string, direction: "in" | "out") => {
@@ -735,6 +756,7 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
                     onLotCount={setLotCount}
                     onLotPatch={patchLot}
                     onLotRemove={removeLot}
+                    onLotTracking={(on) => toggleLotTracking(p, on)}
                     onPatch={(c) => patch(p.id, c)}
                     onStep={(d) => adjust(p.id, d, d < 0 ? "used" : "received")}
                     onDelete={() => setDeleting(p)}
@@ -798,6 +820,21 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
         lots={historyFor ? (lotsByProduct.get(historyFor.id) ?? []) : []}
         refreshKey={activityKey}
         onClose={() => setHistoryFor(null)}
+      />
+      <LotStartDialog
+        product={lotStartFor}
+        onClose={() => setLotStartFor(null)}
+        onConfirm={(lot, expiry) => setLotTracking(lotStartFor!, true, lot, expiry)}
+      />
+      <ConfirmDialog
+        open={!!lotStopFor}
+        title="Turn off lot confirmation?"
+        message={`${lotStopFor?.name} will go back to simple − / + counting. The ${lotStopFor ? fmtNum(lotStopFor.quantity) : ""} ${lotStopFor?.unit ?? ""} on hand stay as they are, and past lot records stay in the history.`}
+        confirmLabel="Turn off"
+        onClose={() => setLotStopFor(null)}
+        onConfirm={async () => {
+          await setLotTracking(lotStopFor!, false)
+        }}
       />
       <ActivityDialog open={activityOpen} onClose={() => setActivityOpen(false)} products={products ?? []} refreshKey={activityKey} />
       <ConfirmDialog

@@ -97,7 +97,9 @@ export function describe(e: ActivityEntry, unit?: string) {
   }
   if (e.action === "Added product" || e.action === "Removed empty lot") return e.action
   if (e.action === "Deleted product") return `Deleted product${e.old_value ? ` (had ${e.old_value})` : ""}`
-  return `${e.action}: ${showValue(e.action, e.old_value)} → ${showValue(e.action, e.new_value)}`
+  const label = e.action === "Track by lot" ? "Lot confirmation" : e.action
+  if (e.old_value == null && e.new_value != null && e.action !== "Track by lot") return `${label}: ${showValue(e.action, e.new_value)}`
+  return `${label}: ${showValue(e.action, e.old_value)} → ${showValue(e.action, e.new_value)}`
 }
 
 function timeOf(iso: string) {

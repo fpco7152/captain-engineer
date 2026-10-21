@@ -266,6 +266,7 @@ export function EditRow({
   onLotCount,
   onLotPatch,
   onLotRemove,
+  onLotTracking,
   onDelete,
   onHistory,
 }: {
@@ -277,6 +278,7 @@ export function EditRow({
   onLotCount: (lot: Lot, qty: number) => Promise<void>
   onLotPatch: (lot: Lot, change: Partial<Pick<Lot, "lot_number" | "expiration_date">>) => Promise<void>
   onLotRemove: (lot: Lot) => void
+  onLotTracking: (on: boolean) => void
   onDelete: () => void
   onHistory: () => void
 }) {
@@ -308,6 +310,29 @@ export function EditRow({
       <div className="mt-2">
         <StatusPills product={p} />
       </div>
+
+      <button
+        type="button"
+        role="switch"
+        aria-checked={p.track_lots}
+        aria-label={`Lot and expiration confirmation for ${p.name}`}
+        onClick={() => onLotTracking(!p.track_lots)}
+        className={`mt-3 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left ring-1 ring-inset transition ${
+          p.track_lots ? "bg-teal-50 ring-teal-200" : "bg-slate-50 ring-slate-200"
+        }`}
+      >
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold text-slate-900">Lot &amp; expiration confirmation</span>
+          <span className="block text-xs text-slate-500">
+            {p.track_lots
+              ? "On: In asks for lot + expiration, Out asks to confirm the lot."
+              : "Off: simple − / + counting."}
+          </span>
+        </span>
+        <span className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition ${p.track_lots ? "bg-teal-700" : "bg-slate-300"}`}>
+          <span className={`inline-block h-6 w-6 rounded-full bg-white shadow transition ${p.track_lots ? "translate-x-[1.375rem]" : "translate-x-0.5"}`} />
+        </span>
+      </button>
 
       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-[minmax(220px,1.4fr)_1fr_1fr_1fr]">
         <div className="col-span-2 md:col-span-1">
@@ -389,25 +414,6 @@ export function EditRow({
               </div>
             </>
           )}
-          <div className="col-span-2 md:col-span-4">
-            <label className={`flex items-start gap-3 rounded-lg bg-white px-3 py-2.5 text-sm ring-1 ring-inset ring-slate-200 ${p.quantity !== 0 ? "opacity-70" : ""}`}>
-              <input
-                type="checkbox"
-                checked={p.track_lots}
-                disabled={p.quantity !== 0}
-                onChange={(e) => onPatch({ track_lots: e.target.checked }).catch(() => {})}
-                className="mt-0.5 h-5 w-5 accent-teal-700"
-              />
-              <span>
-                <span className="font-medium text-slate-900">Track by lot &amp; expiration</span>
-                <span className="block text-slate-500">
-                  {p.quantity !== 0
-                    ? "Set the count to 0 first to turn this on or off."
-                    : "Receiving asks for the lot and expiration; checking out asks you to confirm the lot."}
-                </span>
-              </span>
-            </label>
-          </div>
           <div className="col-span-2">
             <FieldLabel>Barcode</FieldLabel>
             <div className="flex gap-2">
