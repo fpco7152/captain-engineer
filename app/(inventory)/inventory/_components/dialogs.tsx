@@ -4,20 +4,7 @@ import { useEffect, useState } from "react"
 import { Eye, EyeOff, Loader2, X } from "lucide-react"
 import { toast } from "sonner"
 import { supabase } from "@/lib/supabase"
-import {
-  CATEGORIES,
-  LOT_CATEGORIES,
-  type Category,
-  type Lot,
-  type Movement,
-  type Product,
-  type Staff,
-  fmtDate,
-  fmtNum,
-  friendlyError,
-  normalizeProduct,
-  sortLots,
-} from "./types"
+import { CATEGORIES, LOT_CATEGORIES, type Category, type Product, friendlyError, normalizeProduct } from "./types"
 import { FieldLabel } from "./fields"
 
 export function Modal({
@@ -328,112 +315,6 @@ export function AddProductDialog({
         {error && <p className="col-span-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
         <button type="submit" className="hidden" />
       </form>
-    </Modal>
-  )
-}
-
-const REASON_LABEL: Record<string, string> = {
-  edit: "Count updated",
-  "starting count": "Starting count",
-  used: "Used",
-  received: "Received",
-  wasted: "Wasted",
-  expired: "Discarded (expired)",
-  returned: "Returned",
-  "count correction": "Count correction",
-}
-
-export function HistoryDialog({
-  product,
-  lots,
-  staffById,
-  onClose,
-}: {
-  product: Product | null
-  lots: Lot[]
-  staffById: Map<string, Staff>
-  onClose: () => void
-}) {
-  const [rows, setRows] = useState<Movement[] | null>(null)
-  const [error, setError] = useState("")
-
-  useEffect(() => {
-    if (!product) return
-    setRows(null)
-    setError("")
-    supabase
-      .from("stock_movements")
-      .select("*")
-      .eq("product_id", product.id)
-      .order("created_at", { ascending: false })
-      .limit(100)
-      .then(({ data, error: err }) => {
-        if (err) setError(friendlyError(err))
-        else setRows((data as Movement[]).map((m) => ({ ...m, change: Number(m.change), quantity_after: Number(m.quantity_after) })))
-      })
-  }, [product])
-
-  const inStock = sortLots(lots).filter((l) => l.quantity > 0)
-
-  return (
-    <Modal open={!!product} onClose={onClose} title={product ? `History · ${product.name}` : "History"}>
-      {product?.track_lots && (
-        <div className="mb-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Lots in stock</p>
-          {inStock.length === 0 ? (
-            <p className="text-sm text-slate-500">None.</p>
-          ) : (
-            <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
-              {inStock.map((l) => (
-                <li key={l.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <span>
-                    <span className="font-mono font-semibold text-slate-900">Lot {l.lot_number}</span>
-                    <span className="text-slate-500"> · exp {fmtDate(l.expiration_date)}</span>
-                  </span>
-                  <span className="font-semibold tabular-nums">
-                    {fmtNum(l.quantity)} {product.unit}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-      {error && <p className="text-sm text-rose-700">{error}</p>}
-      {!rows && !error && (
-        <div className="flex justify-center py-10">
-          <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-        </div>
-      )}
-      {rows && rows.length === 0 && <p className="py-8 text-center text-slate-500">No stock changes recorded yet.</p>}
-      {rows && rows.length > 0 && (
-        <ol className="divide-y divide-slate-100">
-          {rows.map((m) => (
-            <li key={m.id} className="flex items-start justify-between gap-3 py-3">
-              <div className="min-w-0">
-                <p className="font-medium text-slate-900">
-                  {REASON_LABEL[m.reason] ?? m.reason}
-                  {m.lot_number && <span className="font-mono font-normal text-slate-700"> · Lot {m.lot_number}</span>}
-                  <span className="font-normal text-slate-500"> · now {fmtNum(m.quantity_after)} {product?.unit}</span>
-                </p>
-                <p className="text-sm text-slate-500">
-                  {new Date(m.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
-                  {m.created_by && staffById.get(m.created_by) ? ` · ${staffById.get(m.created_by)!.display_name}` : ""}
-                </p>
-                {m.note && <p className="mt-1 text-sm text-slate-600">“{m.note}”</p>}
-              </div>
-              <span
-                className={`shrink-0 rounded-full px-2.5 py-1 text-sm font-semibold tabular-nums ${
-                  m.change > 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
-                }`}
-              >
-                {m.change > 0 ? "+" : ""}
-                {fmtNum(m.change)}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
     </Modal>
   )
 }

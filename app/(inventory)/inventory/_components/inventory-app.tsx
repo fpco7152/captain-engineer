@@ -12,6 +12,7 @@ import {
   ArrowDownUp,
   Plus,
   ScanBarcode,
+  History,
   Search,
   Syringe,
   Wallet,
@@ -35,7 +36,8 @@ import {
   productStatuses,
 } from "./types"
 import { AdjustRow, EditRow, type FieldPatch, ViewRow } from "./product-row"
-import { AddProductDialog, ChangePasswordForm, ConfirmDialog, HistoryDialog, Modal, type ProductPrefill, btn } from "./dialogs"
+import { AddProductDialog, ChangePasswordForm, ConfirmDialog, Modal, type ProductPrefill, btn } from "./dialogs"
+import { ActivityDialog, HistoryDialog } from "./activity"
 import { ScannerSheet, type StockPreset } from "./scanner"
 import type { OutReason } from "./lot-movement"
 
@@ -150,7 +152,7 @@ function AccountMenu({
             <KeyRound className="h-4 w-4" /> Change password
           </button>
           <button className={item} onClick={pick(onExport)}>
-            <Download className="h-4 w-4" /> Download spreadsheet (CSV)
+            <Download className="h-4 w-4" /> Download current stock (CSV)
           </button>
           <button className={`${item} border-t border-slate-100 text-rose-700`} onClick={pick(() => supabase.auth.signOut())}>
             <LogOut className="h-4 w-4" /> Sign out
@@ -208,7 +210,6 @@ function StatCard({
 export function InventoryApp({ me, username }: { me: Staff; username: string }) {
   const [products, setProducts] = useState<Product[] | null>(null)
   const [loadError, setLoadError] = useState("")
-  const [staff, setStaff] = useState<Staff[]>([])
   const [mode, setModeState] = useState<Mode>("view")
   const [filter, setFilter] = useState<Filter>("all")
   const [search, setSearch] = useState("")
@@ -218,6 +219,9 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
   const [scanning, setScanning] = useState(false)
   const [stockPreset, setStockPreset] = useState<StockPreset | null>(null)
   const [lots, setLots] = useState<Lot[]>([])
+  const [activityOpen, setActivityOpen] = useState(false)
+  const [activityKey, setActivityKey] = useState(0)
+  useEffect(() => setActivityKey((k) => k + 1), [products, lots])
   const [historyFor, setHistoryFor] = useState<Product | null>(null)
   const [deleting, setDeleting] = useState<Product | null>(null)
   const [pwOpen, setPwOpen] = useState(false)
@@ -259,14 +263,9 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
     if (lotRows) setLots((prev) => [...prev.filter((l) => l.product_id !== id), ...(lotRows as Lot[]).map(normalizeLot)])
   }, [])
 
-  const loadStaff = useCallback(async () => {
-    const { data } = await supabase.from("staff").select("*").order("display_name")
-    if (data) setStaff(data as Staff[])
-  }, [])
 
   useEffect(() => {
     loadProducts()
-    loadStaff()
 
     const channel = supabase
       .channel("inventory-products")
@@ -296,9 +295,8 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       document.removeEventListener("visibilitychange", refresh)
       window.removeEventListener("online", refresh)
     }
-  }, [loadProducts, loadStaff])
+  }, [loadProducts])
 
-  const staffById = useMemo(() => new Map(staff.map((s) => [s.user_id, s])), [staff])
 
   const replace = (row: Product) => setProducts((prev) => prev && prev.map((p) => (p.id === row.id ? row : p)))
 
@@ -602,6 +600,9 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
               )}
             </div>
             <div className="flex gap-2">
+              <button className={`${btn.secondary} flex-1 sm:flex-none`} onClick={() => setActivityOpen(true)}>
+                <History className="h-4 w-4" /> Today&apos;s activity
+              </button>
               <button
                 className={`${btn.primary} hidden sm:inline-flex`}
                 onClick={() => {
@@ -794,9 +795,10 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       <HistoryDialog
         product={historyFor}
         lots={historyFor ? (lotsByProduct.get(historyFor.id) ?? []) : []}
-        staffById={staffById}
+        refreshKey={activityKey}
         onClose={() => setHistoryFor(null)}
       />
+      <ActivityDialog open={activityOpen} onClose={() => setActivityOpen(false)} products={products ?? []} refreshKey={activityKey} />
       <ConfirmDialog
         open={!!deleting}
         title="Delete product?"

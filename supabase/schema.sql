@@ -327,3 +327,13 @@ insert into public.products (name, category, brand, unit, par_level) values
 -- set_lot_count(lot, qty)  : count correction.
 -- stock_movements.lot_id / lot_number record which lot each change touched.
 
+-- ---------------------------------------------------------------------------
+-- Activity log (migrations activity_log_stamps / activity_change_log).
+-- staff.initials            : auto-filled from the name (e.g. "Ali Mohamadi" -> AM);
+--                             change it in the staff table if needed.
+-- stock_movements           : product_name + actor_initials stamped on insert; history
+--                             is kept when a product is deleted (product_id set null).
+-- change_log                : detail edits (name, cost, reorder level, barcode, lot fixes,
+--                             products added/deleted) with before/after and initials.
+-- activity (view)           : stock_movements + change_log in one feed for the app.
+
