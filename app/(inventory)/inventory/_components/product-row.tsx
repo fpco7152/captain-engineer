@@ -4,6 +4,7 @@ import { useState } from "react"
 import { ArrowDownToLine, ArrowUpFromLine, ChevronDown, History, Trash2 } from "lucide-react"
 import { CATEGORIES, type Category, type Lot, type Product, daysUntil, fmtDate, fmtMoney, fmtNum, productStatuses, sortLots } from "./types"
 import { EditableDate, EditableNumber, EditableSelect, EditableText, FieldLabel, QuantityStepper } from "./fields"
+import { ScanButton, ScanCodeDialog } from "./camera"
 
 const PILL: Record<string, string> = {
   expired: "bg-rose-100 text-rose-800 ring-rose-200",
@@ -280,6 +281,7 @@ export function EditRow({
   onHistory: () => void
 }) {
   const [open, setOpen] = useState(false)
+  const [scanningCode, setScanningCode] = useState(false)
   const p = product
   return (
     <div className="px-4 py-4">
@@ -408,7 +410,26 @@ export function EditRow({
           </div>
           <div className="col-span-2">
             <FieldLabel>Barcode</FieldLabel>
-            <EditableText value={p.barcode} onSave={(v) => onPatch({ barcode: v })} label="Barcode" maxLength={80} placeholder="Scan or type" />
+            <div className="flex gap-2">
+              <EditableText
+                value={p.barcode}
+                onSave={(v) => onPatch({ barcode: v })}
+                label="Barcode"
+                maxLength={80}
+                placeholder="Scan or type"
+                className="min-w-0 flex-1"
+                inputClassName="font-mono"
+              />
+              <ScanButton onClick={() => setScanningCode(true)} />
+            </div>
+            <ScanCodeDialog
+              open={scanningCode}
+              title={`Scan barcode for ${p.name}`}
+              onClose={() => setScanningCode(false)}
+              onResult={(info) => {
+                if (info.key !== p.barcode) onPatch({ barcode: info.key }).catch(() => {})
+              }}
+            />
           </div>
           <div className="col-span-2">
             <FieldLabel>Supplier</FieldLabel>

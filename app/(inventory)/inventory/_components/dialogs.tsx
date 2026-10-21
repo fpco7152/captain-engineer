@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { supabase } from "@/lib/supabase"
 import { CATEGORIES, LOT_CATEGORIES, type Category, type Product, friendlyError, normalizeProduct } from "./types"
 import { FieldLabel } from "./fields"
+import { ScanButton, ScanCodeDialog } from "./camera"
 
 export function Modal({
   open,
@@ -138,12 +139,14 @@ export function AddProductDialog({
   onAdded,
   defaultCategory,
   prefill,
+  products = [],
 }: {
   open: boolean
   onClose: () => void
   onAdded: (p: Product) => void
   defaultCategory: Category
   prefill?: ProductPrefill
+  products?: Product[]
 }) {
   const blank = () => ({
     name: "",
@@ -162,6 +165,7 @@ export function AddProductDialog({
   const [f, setF] = useState(blank)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const [scanning, setScanning] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -225,6 +229,7 @@ export function AddProductDialog({
     setF((prev) => ({ ...prev, [k]: e.target.value }))
 
   return (
+    <>
     <Modal
       open={open}
       onClose={onClose}
@@ -306,7 +311,24 @@ export function AddProductDialog({
         </label>
         <div className="col-span-2">
           <FieldLabel htmlFor="np-barcode">Barcode</FieldLabel>
-          <input id="np-barcode" className={`${input} font-mono`} value={f.barcode} onChange={set("barcode")} placeholder="Optional · scan to fill" maxLength={80} />
+          <div className="flex gap-2">
+            <input
+              id="np-barcode"
+              className={`${input} font-mono`}
+              value={f.barcode}
+              onChange={set("barcode")}
+              placeholder="Scan or type"
+              maxLength={80}
+              autoComplete="off"
+            />
+            <ScanButton onClick={() => setScanning(true)} />
+          </div>
+          {(() => {
+            const owner = f.barcode.trim() && products.find((p) => p.barcode === f.barcode.trim())
+            return owner ? (
+              <p className="mt-1.5 text-sm text-rose-700">This barcode already belongs to {owner.name}. Scan a different box or clear it.</p>
+            ) : null
+          })()}
         </div>
         <div className="col-span-2">
           <FieldLabel htmlFor="np-sup">Supplier</FieldLabel>
@@ -316,6 +338,20 @@ export function AddProductDialog({
         <button type="submit" className="hidden" />
       </form>
     </Modal>
+    <ScanCodeDialog
+      open={scanning}
+      title="Scan the product's barcode"
+      onClose={() => setScanning(false)}
+      onResult={(info) =>
+        setF((prev) => ({
+          ...prev,
+          barcode: info.key,
+          lot_number: prev.lot_number || info.lot || "",
+          expiration_date: prev.expiration_date || info.expiry || "",
+        }))
+      }
+    />
+    </>
   )
 }
 

@@ -785,6 +785,7 @@ export function InventoryApp({ me, username }: { me: Staff; username: string }) 
       <AddProductDialog
         open={adding}
         prefill={prefill}
+        products={products ?? []}
         onClose={() => setAdding(false)}
         defaultCategory={CATEGORIES.find((c) => c.value === filter)?.value ?? "neurotoxin"}
         onAdded={(p) => {
